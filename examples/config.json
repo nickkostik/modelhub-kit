@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "tools": ["codex", "claude", "opencode", "qwen", "pi"],
+  "cache_budget_bytes": 2147483648,
+  "catalog_sources": [],
+  "mcp_servers": {},
+  "acp_agents": {}
+}
