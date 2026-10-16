@@ -14,8 +14,9 @@ modelhub-kit sync
 modelhub-kit maintain
 ```
 
-`maintain` serializes a selected-tool update, configured catalog refresh, and
-kit-owned cache cleanup under one writer lock. A busy writer is queued. It
+`maintain` serializes a selected-tool update, configured catalog refresh,
+explicitly enabled native integrations, and kit-owned cache cleanup under one
+writer lock. A busy writer is queued. It
 does not install every available tool, start every agent, run inference, or
 restart your interactive applications.
 
@@ -31,19 +32,37 @@ unknown. A transport failure must not turn a last valid catalog into an empty
 one. Metadata checks do not establish that a subscription is signed in; use
 the provider's own client login flow.
 
+Maintenance reports `completed` only when every requested operation is settled.
+Deferred or unknown work produces `queued` and exit 75; failed updates or catalog
+refreshes produce `failed` and exit 1. A retained last-good catalog keeps native
+settings available but does not turn a failed refresh into a successful one.
+Plans do not apply pending changes. Routine state is one overwritten receipt,
+with no appended execution log or versioned backups.
+
 ## Client integration
 
 ```sh
 modelhub-kit integrate --client codex
 modelhub-kit integrate --client codex --apply
+modelhub-kit project --client opencode
+modelhub-kit project --client opencode --apply
+modelhub-kit register-acp --client paseo
+modelhub-kit register-acp --client paseo --apply
 modelhub-kit export-acp
 ```
 
-Supported integration targets are `codex`, `claude`, `opencode`, and `cursor`.
+MCP also supports Qwen Code, Copilot, Devin CLI and Muse Code. Model projection
+and ACP consumer support are documented separately in [Native integrations](INTEGRATIONS.md).
 Inspect the default plan before applying it. Unrelated settings, disabled
 entries, and custom definitions are preserved. MCP server URLs and ACP stdio
 agent commands are separate configuration surfaces. Use environment-variable
 names for credentials; do not put credential values in a shared example.
+
+Set individual `mcp`, `models` or `acp` booleans in the configuration's
+`integrations` map to include those surfaces in maintenance. The empty default
+does not modify native harness configuration. Changed shared client settings
+wait until the client is idle; an unknown process inventory also queues changes.
+Native schema discovery reads metadata rather than launching GUI applications.
 
 ## Cache budget
 
@@ -105,6 +124,9 @@ Keep private keys in your SSH agent or SSH configuration. Host verification
 must remain enabled. The actual remote OS and boot identity are checked before
 writing, so another OS at the same address is queued rather than treated as
 the enrolled boot. Offline and busy nodes remain queued for a later attempt.
+First-time kit delivery is explicit through `--source <reviewed-source> --enroll`;
+it is separate from routine maintenance. [Fleet delivery](FLEET.md) describes
+strict trust, finite input, checksums, prerequisites and staging cleanup.
 
 No live model requests are needed for these maintenance checks. Report a
 failure with its sanitized status and the operation that produced it; do not

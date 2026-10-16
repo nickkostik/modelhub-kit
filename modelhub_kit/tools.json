@@ -1,11 +1,150 @@
 {
-  "codex": {"package": "@openai/codex", "command": "codex", "source": "https://developers.openai.com/codex/cli"},
-  "claude": {"package": "@anthropic-ai/claude-code", "command": "claude", "source": "https://code.claude.com/docs/en/setup"},
-  "opencode": {"package": "opencode-ai", "command": "opencode", "source": "https://opencode.ai/docs"},
-  "qwen": {"package": "@qwen-code/qwen-code", "command": "qwen", "source": "https://github.com/QwenLM/qwen-code"},
-  "pi": {"package": "@earendil-works/pi-coding-agent", "command": "pi", "source": "https://github.com/earendil-works/pi"},
-  "copilot": {"package": "@github/copilot", "command": "copilot", "source": "https://docs.github.com/en/copilot"},
-  "grok": {"package": "@xai-official/grok", "command": "grok", "source": "https://github.com/xai-org/grok-cli"},
-  "omp": {"manager": "native-omp", "command": "omp", "source": "https://github.com/can1357/oh-my-pi"},
-  "droid": {"manager": "native-droid", "command": "droid", "source": "https://docs.factory.ai/cli"}
+  "codex": {
+    "package": "@openai/codex",
+    "command": "codex",
+    "source": "https://developers.openai.com/codex/cli"
+  },
+  "claude": {
+    "package": "@anthropic-ai/claude-code",
+    "command": "claude",
+    "source": "https://code.claude.com/docs/en/setup"
+  },
+  "opencode": {
+    "package": "opencode-ai",
+    "command": "opencode",
+    "source": "https://opencode.ai/docs"
+  },
+  "qwen": {
+    "package": "@qwen-code/qwen-code",
+    "command": "qwen",
+    "source": "https://github.com/QwenLM/qwen-code"
+  },
+  "pi": {
+    "package": "@earendil-works/pi-coding-agent",
+    "command": "pi",
+    "source": "https://github.com/earendil-works/pi"
+  },
+  "copilot": {
+    "package": "@github/copilot",
+    "command": "copilot",
+    "source": "https://docs.github.com/en/copilot"
+  },
+  "grok": {
+    "package": "@xai-official/grok",
+    "command": "grok",
+    "source": "https://github.com/xai-org/grok-cli"
+  },
+  "omp": {
+    "manager": "native-omp",
+    "command": "omp",
+    "source": "https://github.com/can1357/oh-my-pi"
+  },
+  "droid": {
+    "manager": "native-droid",
+    "command": "droid",
+    "source": "https://docs.factory.ai/cli"
+  },
+  "devin-cli": {
+    "manager": "native-products",
+    "command": "devin",
+    "source": "https://docs.devin.ai/cli"
+  },
+  "cursor-cli": {
+    "manager": "native-products",
+    "command": "cursor-agent",
+    "source": "https://cursor.com/docs/cli/overview"
+  },
+  "muse": {
+    "manager": "native-products",
+    "command": "muse",
+    "source": "https://dev.meta.ai/docs/muse-code"
+  },
+  "devin-desktop": {
+    "manager": "native-desktop",
+    "command": "devin-desktop",
+    "source": "https://docs.devin.ai/desktop/install"
+  },
+  "cursor-desktop": {
+    "manager": "native-desktop",
+    "command": "cursor",
+    "source": "https://cursor.com/docs/get-started/quickstart"
+  },
+  "grokbot": {
+    "manager": "native-desktop",
+    "command": "grok-bot",
+    "source": "https://prod.cursor.com/docs/grok-bot/deployment"
+  },
+  "kilo": {
+    "package": "@kilocode/cli",
+    "command": "kilo",
+    "source": "https://github.com/Kilo-Org/kilocode"
+  },
+  "dsh": {
+    "package": "@deepseek-ai/dsh",
+    "command": "dsh",
+    "source": "https://github.com/deepseek-ai/deepseek-harness"
+  },
+  "cline": {
+    "package": "cline",
+    "command": "cline",
+    "source": "https://github.com/cline/cline"
+  },
+  "crush": {
+    "package": "@charmland/crush",
+    "command": "crush",
+    "source": "https://github.com/charmbracelet/crush"
+  },
+  "openclaw": {
+    "package": "openclaw",
+    "command": "openclaw",
+    "source": "https://github.com/openclaw/openclaw"
+  },
+  "kimi": {
+    "package": "@moonshot-ai/kimi-code",
+    "command": "kimi",
+    "source": "https://github.com/MoonshotAI/kimi-code"
+  },
+  "glm-acp-agent": {
+    "package": "glm-acp-agent",
+    "command": "glm-acp-agent",
+    "source": "https://github.com/stefandevo/glm-acp-agent"
+  },
+  "t3": {
+    "package": "t3",
+    "command": "t3",
+    "source": "https://github.com/pingdotgg/t3code",
+    "platforms": {
+      "Darwin": [
+        "arm64",
+        "aarch64"
+      ],
+      "Linux": [
+        "x86_64",
+        "amd64",
+        "arm64",
+        "aarch64"
+      ],
+      "Windows": [
+        "amd64",
+        "x86_64",
+        "arm64",
+        "aarch64"
+      ]
+    }
+  },
+  "codex-acp": {
+    "package": "@agentclientprotocol/codex-acp",
+    "command": "codex-acp",
+    "source": "https://github.com/agentclientprotocol/codex-acp"
+  },
+  "claude-acp": {
+    "package": "@agentclientprotocol/claude-agent-acp",
+    "command": "claude-agent-acp",
+    "source": "https://github.com/agentclientprotocol/claude-agent-acp"
+  },
+  "paseo": {
+    "package": "@getpaseo/cli",
+    "command": "paseo",
+    "source": "https://github.com/getpaseo/paseo"
+  }
 }

@@ -19,11 +19,15 @@ import tempfile
 FILES = (
     "modelhub_kit/__init__.py", "modelhub_kit/__main__.py", "modelhub_kit/core.py",
     "modelhub_kit/updater.py", "modelhub_kit/catalog.py", "modelhub_kit/integration.py",
+    "modelhub_kit/projection.py", "modelhub_kit/acp.py",
     "modelhub_kit/cache.py", "modelhub_kit/fleet.py", "modelhub_kit/schedule.py", "modelhub_kit/tools.json",
+    "modelhub_kit/native_helpers/__init__.py", "modelhub_kit/native_helpers/omp.py",
+    "modelhub_kit/native_helpers/droid.py", "modelhub_kit/native_helpers/products.py",
+    "modelhub_kit/native_helpers/desktop.py", "modelhub_kit/native_helpers/macos_apps.py",
 )
 OPTIONAL_FILES = (
-    "modelhub_kit/native_helpers/__init__.py", "modelhub_kit/native_helpers/omp.py",
-    "modelhub_kit/native_helpers/droid.py", "LICENSE", "AGENTS.md", "README.md", "docs/INSTALL.md", "docs/OPERATIONS.md",
+    "LICENSE", "AGENTS.md", "README.md", "docs/INSTALL.md", "docs/OPERATIONS.md",
+    "docs/SUPPORT.md", "docs/INTEGRATIONS.md", "docs/FLEET.md",
 )
 MARKER = "modelhub-kit-install-v1"
 LAUNCH = '''#!/usr/bin/env python3

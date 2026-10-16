@@ -12,6 +12,14 @@ from unittest.mock import patch
 from modelhub_kit import cache, catalog, core, integration, updater
 
 
+def client_environment(home):
+    return {'PATH': os.environ.get('PATH', ''), 'HOME': str(home), 'USERPROFILE': str(home),
+            'CODEX_HOME': str(home / '.codex'), 'XDG_CONFIG_HOME': str(home / '.config'),
+            'XDG_STATE_HOME': str(home / '.local/state'), 'XDG_CACHE_HOME': str(home / '.cache'),
+            'APPDATA': str(home / 'AppData/Roaming'), 'LOCALAPPDATA': str(home / 'AppData/Local'),
+            'PI_CODING_AGENT_DIR': str(home / '.pi/agent')}
+
+
 class CoreTests(unittest.TestCase):
     def test_expected_text_refuses_concurrent_config_edit(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -72,16 +80,17 @@ class CoreTests(unittest.TestCase):
     def test_client_custom_entry_preserved_and_owned_repeat_is_noop(self):
         with tempfile.TemporaryDirectory() as tmp:
             home, state = pathlib.Path(tmp), pathlib.Path(tmp) / 'state'
-            path = home / '.codex/config.toml'
-            core.atomic_text(path, 'model = "chosen-model"\n[mcp_servers.personal]\nurl = "https://custom.example.invalid/mcp"\n')
-            settings = {'mcp_servers': {'managed': {'url': 'https://server.example.invalid/mcp'}}}
-            first = integration.integrate(settings, home, state, 'codex', True)
-            self.assertTrue(first['changed'])
-            second = integration.integrate(settings, home, state, 'codex', True)
-            self.assertFalse(second['changed'])
-            self.assertIn('model = "chosen-model"', path.read_text())
-            with self.assertRaises(core.GuardError):
-                integration.integrate({'mcp_servers': {'personal': {'url': 'https://other.example.invalid/mcp'}}}, home, state, 'codex', True)
+            with patch.dict(os.environ, client_environment(home), clear=True), patch.object(integration, 'native_idle', return_value=True):
+                path = home / '.codex/config.toml'
+                core.atomic_text(path, 'model = "chosen-model"\n[mcp_servers.personal]\nurl = "https://custom.example.invalid/mcp"\n')
+                settings = {'mcp_servers': {'managed': {'url': 'https://server.example.invalid/mcp'}}}
+                first = integration.integrate(settings, home, state, 'codex', True)
+                self.assertTrue(first['changed'])
+                second = integration.integrate(settings, home, state, 'codex', True)
+                self.assertFalse(second['changed'])
+                self.assertIn('model = "chosen-model"', path.read_text())
+                with self.assertRaises(core.GuardError):
+                    integration.integrate({'mcp_servers': {'personal': {'url': 'https://other.example.invalid/mcp'}}}, home, state, 'codex', True)
 
     def test_windows_system_process_without_commandline_does_not_block(self):
         fake_os = types.SimpleNamespace(name='nt', getpid=lambda: 500, getppid=lambda: 400)
@@ -98,18 +107,19 @@ class CoreTests(unittest.TestCase):
         for client, reference in references.items():
             with self.subTest(client=client), tempfile.TemporaryDirectory() as tmp:
                 home, state = pathlib.Path(tmp), pathlib.Path(tmp) / 'state'
-                settings = {'mcp_servers': {'example': {'url': 'https://server.example.invalid/mcp', 'bearer_env': 'MCP_TOKEN'}}}
-                integration.integrate(settings, home, state, client, True)
-                path = home / {'claude': '.claude.json', 'opencode': '.config/opencode/opencode.json', 'cursor': '.cursor/mcp.json'}[client]
-                document = json.loads(path.read_text())
-                entry = document['mcp' if client == 'opencode' else 'mcpServers']['example']
-                self.assertEqual(entry['headers']['Authorization'], 'Bearer ' + reference)
+                with patch.dict(os.environ, client_environment(home), clear=True), patch.object(integration, 'native_idle', return_value=True):
+                    settings = {'mcp_servers': {'example': {'url': 'https://server.example.invalid/mcp', 'bearer_env': 'MCP_TOKEN'}}}
+                    integration.integrate(settings, home, state, client, True)
+                    path = home / {'claude': '.claude.json', 'opencode': '.config/opencode/opencode.json', 'cursor': '.cursor/mcp.json'}[client]
+                    document = json.loads(path.read_text())
+                    entry = document['mcp' if client == 'opencode' else 'mcpServers']['example']
+                    self.assertEqual(entry['headers']['Authorization'], 'Bearer ' + reference)
 
     def test_npm_current_tool_is_not_reinstalled_and_active_entrypoint_defers(self):
         with tempfile.TemporaryDirectory() as tmp:
             prefix, state = pathlib.Path(tmp) / 'prefix', pathlib.Path(tmp) / 'state'
             metadata = updater.package_file(prefix, '@qwen-code/qwen-code')
-            core.atomic_json(metadata, {'version': '1.0.0'})
+            core.atomic_json(metadata, {'name': '@qwen-code/qwen-code', 'version': '1.0.0', 'bin': {'qwen': 'cli.js'}})
             entry = metadata.parent / 'cli.js'
             core.atomic_text(entry, '// local fixture')
             calls = []

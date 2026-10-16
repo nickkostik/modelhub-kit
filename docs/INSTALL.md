@@ -82,6 +82,19 @@ maintenance. Existing installed tools can be updated; installing missing tools
 requires the explicit `update --install-missing` option. Native client sign-in
 stays with each client. The kit does not copy account credentials.
 
+Select a registered ID rather than a shared command alias:
+
+```sh
+modelhub-kit update --tool devin-cli --install-missing
+modelhub-kit update --tool cursor-cli --install-missing
+modelhub-kit update --tool muse --install-missing
+```
+
+Desktop applications have separate IDs: `cursor-desktop`, `devin-desktop` and
+`grokbot`. An explicit request still requires a supported verified native
+installation channel. [Product support](SUPPORT.md) documents the platform
+matrix and guarded paths; an unavailable channel stays queued.
+
 | Platform | Configuration | State |
 | --- | --- | --- |
 | Linux and macOS | `$XDG_CONFIG_HOME/modelhub-kit/config.json`, default `~/.config/modelhub-kit/config.json` | `$XDG_STATE_HOME/modelhub-kit`, default `~/.local/state/modelhub-kit` |
@@ -111,3 +124,19 @@ sh scripts/install.sh --schedule
 Scheduling is per-user and quiet. It does not create terminal windows or
 restart an interactive coding session. See [Operations](OPERATIONS.md) for
 ownership checks, platform behavior, and removal.
+
+## Fleet installation
+
+The same allowlisted installer can be delivered to trusted SSH aliases after
+actual OS and boot discovery:
+
+```sh
+modelhub-kit fleet --inventory /path/to/private-inventory.json --source /path/to/reviewed-source --enroll
+modelhub-kit fleet --inventory /path/to/private-inventory.json --source /path/to/reviewed-source --enroll --apply
+```
+
+Add `--prerequisites` only when you intend to install missing supported runtimes,
+and `--schedule` only to register background maintenance. Neither option is
+implied by enrollment. A remote administrative authorization gap queues work;
+the kit does not transmit passwords or disable strict SSH identity checks.
+See [Fleet delivery](FLEET.md) for boot enrollment and bounded transfer details.

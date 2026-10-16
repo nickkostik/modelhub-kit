@@ -7,6 +7,18 @@ import re
 from .core import GuardError, atomic_json, http_json, now, read_json
 
 
+def source_fingerprint(source):
+    """Bind HTTP validators and projections to an origin and credential scope."""
+    name = source.get('bearer_env')
+    scope = {'url': source.get('url'), 'bearer_env': name}
+    if name:
+        credential = os.environ.get(name)
+        if not credential:
+            raise GuardError('missing-source-credential-reference')
+        scope['authScope'] = hashlib.sha256(b'ModelHub-Kit catalog credential scope\0' + credential.encode()).hexdigest()
+    return hashlib.sha256(json.dumps(scope, sort_keys=True).encode()).hexdigest()
+
+
 def models(value):
     rows = value.get('data', value.get('models')) if isinstance(value, dict) else None
     if not isinstance(rows, list) or len(rows) > 20000:
@@ -61,7 +73,7 @@ def sync(config, state, fetch=http_json):
                 results.append({'source': name, 'status': 'missing-credential-reference', 'retained': prior is not None})
                 continue
             headers['Authorization'] = 'Bearer ' + credential
-        fingerprint = hashlib.sha256(json.dumps({'url': source.get('url'), 'bearer_env': environment_name}, sort_keys=True).encode()).hexdigest()
+        fingerprint = source_fingerprint(source)
         if prior and prior.get('sourceFingerprint') != fingerprint:
             prior = None
             headers = {k: v for k, v in headers.items() if k == 'Authorization'}

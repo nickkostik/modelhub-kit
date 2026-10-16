@@ -28,38 +28,49 @@ modelhub-kit schedule --apply
 ## What it does
 
 - Compares official stable versions and updates the owned installation actually used by the selected command. Current versions are left installed, missing tools require an explicit selection, and custom or newer installations are preserved.
-- Manages npm installations of Codex, Claude Code, OpenCode, Qwen Code, Pi, Copilot, and Grok. Existing compatible managed standalone macOS OMP and Unix Droid use checksummed native adapters and atomic promotion. Windows native standalone updates remain explicitly queued for their native updater.
+- Manages selected npm harnesses and ACP adapters, native Devin CLI, Cursor CLI and Muse Code, plus separate Cursor, Devin and Grok Bot desktop update channels. [Product support](docs/SUPPORT.md) lists ownership, platform and vendor constraints. Current or newer installations do not trigger an artifact download.
 - Serializes mutation with a kernel lock. Active tool sessions defer package replacement. Maintenance children are bounded, without app restarts or global process-kill commands. Native Droid updates bypass the vendor installer's process-kill step.
 - Refreshes user-selected HTTPS model endpoints with ETag/Last-Modified validators. Invalid/truncated responses retain the last good catalog. Exact model IDs and all supplied reasoning metadata remain intact; unknown capabilities stay unknown.
-- Plans native MCP configuration for Codex, Claude Code, OpenCode, and Cursor. Apply changes only through owned entries/receipts, preserving unrelated settings. Each client receives its documented environment-reference syntax for bearer credentials; native OAuth remains available. No credential values are written into client configuration.
-- Exports ACP agents as native stdio command manifests with environment-variable names. An MCP HTTP URL is not an ACP transport. Sync does not start agent processes or perform model inference.
+- Plans native MCP configuration for Codex, Claude Code, OpenCode, Cursor, Qwen Code, Copilot, Devin CLI and Muse Code. Owned entries preserve unrelated settings and use native credential references. Unsupported header interpolation queues for native authentication.
+- Projects validated model metadata into supported native provider configurations and registers ACP agents in Paseo and T3. Exact model IDs and representable reasoning efforts remain intact; an unrepresentable choice queues the projection instead of clipping it. Separate Codex profiles leave the default subscription configuration untouched. [Native integrations](docs/INTEGRATIONS.md) explain each client boundary.
+- Exports ACP agents as native stdio command manifests with environment-variable names. MCP HTTP URLs and ACP stdio commands remain distinct. Sync does not start agents or perform inference.
 - Caps its own npm download cache at a configurable 2 GiB target when idle. Installed tools, external user caches, live environments, browser profiles, conversations, and authentication stores are outside that cleanup scope. Busy/unknown cache users defer cleanup.
-- Keeps fleet hosts queued when offline, busy, or booted into another OS. SSH aliases must already be trusted and enrolled. Strict host verification is retained, and actual OS/optional boot guards run before remote maintenance.
+- Maintains or explicitly installs the kit through trusted SSH aliases, with finite checksummed source delivery and actual OS/boot checks before writes. Offline, mismatched and busy hosts remain queued; dual boots are separate enrollments. Private keys are never distributed.
 - Offers optional daily background scheduling: Linux user systemd, macOS launchd, and a hidden Windows scheduled task. Interactive harnesses receive no file, thread, CPU, or memory limits from the kit.
 
 ## Personal configuration
 
 Edit your generated configuration, starting from [the empty example](examples/config.json). Model endpoints, MCP URLs and fleet aliases are supplied by each user; no shared service, account, credential, machine inventory, or subscription is shipped.
 
-Catalog source records use `id`, `url`, and optional `bearer_env`. The URL must be HTTPS; authentication is read at runtime from the named environment variable. Only `/models`-style `data` or `models` arrays are accepted. This refreshes metadata; configure the corresponding provider in your native harness to use its models.
+Catalog source records use `id`, `url`, and optional `bearer_env`. The URL must be HTTPS; authentication is read at runtime from the named environment variable. Only `/models`-style `data` or `models` arrays are accepted. Conditional requests are bound to both the source and credential scope. Configure `model_providers` to project a source into supported native harnesses; these records require `source`, `base_url`, `protocol` and an explicit `credential_env` name, preventing accidental use of another account's credentials.
 
-MCP server records map a unique name to `url` and optional `bearer_env`. Keep secrets out of URLs. Inspect a plan before applying:
+MCP server records use an HTTPS `url` and optional `bearer_env`, or a literal stdio `command`, `args` and `env_names`. Keep credential values out of configuration and URLs. Inspect a plan before applying:
 
 ```sh
 modelhub-kit sync
 modelhub-kit integrate --client codex
 modelhub-kit integrate --client codex --apply
+modelhub-kit project --client opencode
+modelhub-kit project --client opencode --apply
+modelhub-kit register-acp --client paseo
+modelhub-kit register-acp --client paseo --apply
 modelhub-kit export-acp
 modelhub-kit cache
 modelhub-kit maintain
 ```
 
-For fleets, make your own inventory outside Git from [the empty fleet example](examples/fleet.json). Each host specifies an existing SSH `alias`, expected `os` (`linux`, `linux:arch`, `macos`, or `windows`) and optional `boot` identity reported by `doctor`. Install locally on each OS first; dual/triple boots are separate enrollments. The kit never copies SSH keys or bypasses first-time trust.
+Automatic native configuration is opt-in through `integrations`, for example `{"opencode":{"mcp":true,"models":true},"paseo":{"acp":true}}`. Daily maintenance refreshes catalogs before applying those surfaces, preserving custom changes and queueing active clients. The default integration map is empty.
+
+For fleets, make your own inventory outside Git from [the empty fleet example](examples/fleet.json). Each host specifies an existing trusted SSH `alias`, expected `os` (`linux`, `linux:arch`, `macos`, or `windows`) and optional `boot` identity reported by `doctor`. Use an OS-specific SSH alias for each boot. The kit never copies SSH keys or bypasses first-time trust.
 
 ```sh
 modelhub-kit fleet --inventory /path/to/your-inventory.json
 modelhub-kit fleet --inventory /path/to/your-inventory.json --apply
+modelhub-kit fleet --inventory /path/to/your-inventory.json --source /path/to/reviewed-source --enroll
+modelhub-kit fleet --inventory /path/to/your-inventory.json --source /path/to/reviewed-source --enroll --apply
 ```
+
+[Fleet installation](docs/FLEET.md) explains optional prerequisite installation and scheduling. Source delivery includes only the reviewed application allowlist; it excludes local configuration, state and repository history.
 
 [Operations](docs/OPERATIONS.md) explains background behavior, preservation, repairs and queued work. [Agent instructions](AGENTS.md) define the same rules for contributors and automated agents.
 

@@ -3,6 +3,7 @@ import contextlib
 import datetime
 import gzip
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -19,6 +20,8 @@ from collections import deque
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
+from . import __version__
 
 
 class GuardError(Exception):
@@ -231,13 +234,18 @@ class WindowsJob:
             self.handle = None
 
 
-def run(argv, *, env=None, timeout=60):
+def run(argv, *, env=None, timeout=60, input_data=None):
     """Bound our own child; never search for or terminate other applications."""
+    if input_data is not None and (not isinstance(input_data, bytes) or len(input_data) > 32 * 1024**2):
+        raise GuardError('bounded-byte-input-required')
     chunks = deque(maxlen=16)
     size = [0]
+    sent = [0]
+    input_failed = [False]
     job = WindowsJob() if os.name == 'nt' else None
     try:
-        child = subprocess.Popen([str(a) for a in argv], env=env, stdin=subprocess.DEVNULL,
+        child = subprocess.Popen([str(a) for a in argv], env=env,
+                                 stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  start_new_session=os.name != 'nt',
                                  creationflags=subprocess.CREATE_NO_WINDOW | 4 if os.name == 'nt' else 0)
@@ -261,29 +269,67 @@ def run(argv, *, env=None, timeout=60):
             pass
     reader = threading.Thread(target=drain, daemon=True)
     reader.start()
+    def feed():
+        try:
+            view = memoryview(input_data)
+            while sent[0] < len(view):
+                count = child.stdin.write(view[sent[0]:sent[0] + 65536])
+                if not count:
+                    raise BrokenPipeError()
+                sent[0] += count
+            child.stdin.flush()
+        except (OSError, ValueError):
+            input_failed[0] = True
+        finally:
+            try:
+                child.stdin.close()
+            except (OSError, ValueError):
+                input_failed[0] = True
+    feeder = threading.Thread(target=feed, daemon=True) if input_data is not None else None
+    if feeder:
+        feeder.start()
+    def stop_owned(force=False):
+        if job:
+            job.finish()
+        else:
+            try:
+                os.killpg(child.pid, signal.SIGKILL if force else signal.SIGTERM)
+            except ProcessLookupError:
+                pass
     try:
         timed_out = False
         try:
             child.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
-            if os.name != 'nt':
-                os.killpg(child.pid, signal.SIGTERM)
-            else:
-                job.finish()
+            stop_owned()
             try:
                 child.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                if os.name != 'nt':
-                    os.killpg(child.pid, signal.SIGKILL)
-                else:
-                    job.finish()
+                stop_owned(True)
                 child.wait()
         if job:
             job.finish()
+        if feeder:
+            feeder.join(timeout=1)
+            if feeder.is_alive():
+                # A child must not leave an inherited pipe holding our finite
+                # delivery open after its own exit. Only our process group/job
+                # is eligible for cancellation.
+                input_failed[0] = True
+                stop_owned()
+                feeder.join(timeout=1)
+                if feeder.is_alive():
+                    stop_owned(True)
+                    feeder.join(timeout=1)
+                if feeder.is_alive():
+                    raise GuardError('maintenance-input-still-exiting')
         reader.join(timeout=2)
-        return {'exit': child.returncode, 'timedOut': timed_out,
-                'output': b''.join(tuple(chunks)).decode('utf-8', errors='replace'), 'outputTruncated': size[0] > 65536}
+        result = {'exit': child.returncode, 'timedOut': timed_out,
+                  'output': b''.join(tuple(chunks)).decode('utf-8', errors='replace'), 'outputTruncated': size[0] > 65536}
+        if input_data is not None:
+            result.update(inputSent=sent[0], inputFailed=input_failed[0])
+        return result
     finally:
         if job:
             job.close()
@@ -334,37 +380,47 @@ def http_json(url, headers=None, limit=8 * 1024 * 1024):
     if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
         raise GuardError('https-without-embedded-credentials-required')
     request = urllib.request.Request(url, headers={'Accept': 'application/json', 'Accept-Encoding': 'identity',
-                                                  'User-Agent': 'ModelHub-Kit/0.1', **(headers or {})})
+                                                  'User-Agent': 'ModelHub-Kit/' + __version__, **(headers or {})})
     try:
         response = urllib.request.build_opener(SameOriginRedirect()).open(request, timeout=30)
     except urllib.error.HTTPError as error:
         if error.code == 304:
             return None, {}
         raise GuardError('metadata-http-error') from None
-    with response:
-        if urllib.parse.urlsplit(response.url).scheme != 'https':
-            raise GuardError('insecure-metadata-redirect')
-        body = response.read(limit + 1)
-        if len(body) > limit:
-            raise GuardError('oversized-metadata')
-        encoding = response.headers.get('Content-Encoding', 'identity').lower()
-        if encoding == 'gzip':
-            with gzip.GzipFile(fileobj=io.BytesIO(body)) as compressed:
-                body = compressed.read(limit + 1)
-        elif encoding not in ('identity', ''):
-            raise GuardError('unsupported-content-encoding')
-        if len(body) > limit:
-            raise GuardError('oversized-decoded-metadata')
-        content_type = response.headers.get_content_type()
-        if content_type != 'application/json' and not content_type.endswith('+json'):
-            raise GuardError('json-content-type-required')
-        value = json.loads(body)
-        return value, {k: response.headers[k] for k in ('ETag', 'Last-Modified') if response.headers.get(k)}
+    try:
+        with response:
+            if urllib.parse.urlsplit(response.url).scheme != 'https':
+                raise GuardError('insecure-metadata-redirect')
+            body = response.read(limit + 1)
+            if len(body) > limit:
+                raise GuardError('oversized-metadata')
+            length = response.headers.get('Content-Length')
+            if length is not None and (not re.fullmatch(r'[0-9]+', length) or int(length) != len(body)):
+                raise GuardError('incomplete-metadata-body')
+            encoding = response.headers.get('Content-Encoding', 'identity').lower()
+            if encoding == 'gzip':
+                with gzip.GzipFile(fileobj=io.BytesIO(body)) as compressed:
+                    body = compressed.read(limit + 1)
+            elif encoding not in ('identity', ''):
+                raise GuardError('unsupported-content-encoding')
+            if len(body) > limit:
+                raise GuardError('oversized-decoded-metadata')
+            content_type = response.headers.get_content_type()
+            if content_type != 'application/json' and not content_type.endswith('+json'):
+                raise GuardError('json-content-type-required')
+            value = json.loads(body)
+            validators = {k: response.headers[k] for k in ('ETag', 'Last-Modified')
+                          if response.headers.get(k) and len(response.headers[k]) <= 4096
+                          and not any(c in response.headers[k] for c in '\r\n\0')}
+            return value, validators
+    except (EOFError, http.client.HTTPException, zlib.error) as error:
+        raise GuardError('metadata-response-body-incomplete') from None
 
 
 def default_config():
     return {'version': 1, 'tools': ['codex', 'claude', 'opencode', 'qwen', 'pi'],
-            'cache_budget_bytes': 2 * 1024**3, 'catalog_sources': [], 'mcp_servers': {}, 'acp_agents': {}}
+            'cache_budget_bytes': 2 * 1024**3, 'catalog_sources': [], 'mcp_servers': {}, 'acp_agents': {},
+            'model_providers': {}, 'integrations': {}, 'client_versions': {}}
 
 
 def config(path):
@@ -379,6 +435,41 @@ def config(path):
         raise GuardError('catalog-url-and-environment-references-only')
     if not isinstance(value.get('mcp_servers', {}), dict) or not isinstance(value.get('acp_agents', {}), dict):
         raise GuardError('object-integration-config-required')
+    providers = value.get('model_providers', {})
+    versions = value.get('client_versions', {})
+    integrations = value.get('integrations', {})
+    safe_id = lambda name: isinstance(name, str) and re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', name)
+    if not isinstance(providers, dict) or len(providers) > 32:
+        raise GuardError('bounded-model-providers-required')
+    source_ids = {s.get('id') for s in value.get('catalog_sources', []) if isinstance(s.get('id'), str)}
+    for name, provider in providers.items():
+        if (not safe_id(name) or not isinstance(provider, dict)
+                or set(provider) - {'source', 'base_url', 'credential_env', 'protocol'}
+                or provider.get('source') not in source_ids):
+            raise GuardError('explicit-catalog-provider-reference-required')
+        url = provider.get('base_url')
+        if not isinstance(url, str) or len(url) > 4096 or any(c in url for c in '\r\n\0'):
+            raise GuardError('safe-provider-url-required')
+        parsed = urllib.parse.urlsplit(url)
+        if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
+                or parsed.fragment or any(re.search(r'key|token|password|secret|credential|authorization', k, re.I)
+                                         for k, _ in urllib.parse.parse_qsl(parsed.query))):
+            raise GuardError('provider-https-without-embedded-credentials-required')
+        credential_name = provider.get('credential_env')
+        if not isinstance(credential_name, str) or not re.fullmatch(r'[A-Z][A-Z0-9_]{0,127}', credential_name):
+            raise GuardError('credential-environment-name-required')
+        if provider.get('protocol') not in ('openai-completions', 'openai-responses', 'anthropic-messages'):
+            raise GuardError('explicit-supported-provider-protocol-required')
+    if (not isinstance(versions, dict) or len(versions) > 64
+            or any(not safe_id(k) or not isinstance(v, str) or not re.fullmatch(r'[A-Za-z0-9.+_-]{1,128}', v)
+                   for k, v in versions.items())):
+        raise GuardError('native-client-version-map-required')
+    if not isinstance(integrations, dict) or len(integrations) > 64:
+        raise GuardError('bounded-client-integration-map-required')
+    for name, surfaces in integrations.items():
+        if (not safe_id(name) or not isinstance(surfaces, dict) or set(surfaces) - {'mcp', 'models', 'acp'}
+                or any(not isinstance(v, bool) for v in surfaces.values())):
+            raise GuardError('explicit-client-integration-surfaces-required')
     if not isinstance(value.get('cache_budget_bytes', 0), int) or not 64 * 1024**2 <= value['cache_budget_bytes'] <= 8 * 1024**3:
         raise GuardError('invalid-cache-budget')
     return value
