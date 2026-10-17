@@ -22,6 +22,49 @@ spec.loader.exec_module(installer)
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_node_prerequisite_mutation_uses_custody_and_macos_queues(self):
+        import types
+        for system, native_os in (('linux', 'posix'), ('win32', 'nt'), ('darwin', 'posix')):
+            with self.subTest(system=system), patch.object(installer, 'os', types.SimpleNamespace(name=native_os, environ={}, geteuid=lambda: 0)), \
+                    patch.object(installer.sys, 'platform', system), \
+                    patch.object(installer.shutil, 'which', side_effect=lambda name: '/fixture/' + name), \
+                    patch.object(installer, '_node_version', side_effect=[None, '24.0.0']), \
+                    patch.object(installer.subprocess, 'run', side_effect=AssertionError('vendor timeout runner used')), \
+                    patch.object(core, 'run_mutation', return_value={'exit': 0, 'treeComplete': True}) as mutate:
+                result = installer.node_prerequisite(True)
+            self.assertEqual(result['ready'], system != 'darwin')
+            self.assertEqual(mutate.call_count, int(system != 'darwin'))
+
+    def test_maintenance_receipt_binds_terminal_queued_operation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home, state = Path(folder), Path(folder) / 'state'
+            settings = core.default_config(); operation = 'a' * 32
+            with patch.object(sys, 'argv', ['modelhub-kit', '--operation-id', operation, 'maintain']), \
+                    patch.object(cli, 'locations', return_value=(home, home / 'config.json', state)), \
+                    patch.object(cli, 'config', return_value=settings), patch.object(cli, 'check_identity', return_value={}), \
+                    patch('modelhub_kit.updater.update', return_value=[{'status': 'queued'}]), \
+                    patch('modelhub_kit.catalog.sync', return_value=[]), \
+                    patch('modelhub_kit.cache.enforce', return_value={'status': 'absent'}), \
+                    patch.object(cli, 'integration_pass', return_value=[]):
+                value = cli.main()
+            self.assertEqual(value['status'], 'queued')
+            self.assertEqual(value['operationId'], operation)
+            self.assertTrue(value['operationTerminal'])
+            self.assertNotIn('operationId', json.loads((state / 'last-maintenance.json').read_text()))
+    def test_schedule_follows_maintenance_without_execution_deadline(self):
+        with tempfile.TemporaryDirectory() as folder:
+            state = Path(folder)
+            linux = schedule._linux([sys.executable, '-m', 'modelhub_kit', 'maintain'], state)
+            text = linux['files'][linux['primary']].decode()
+            self.assertIn('TimeoutStartSec=infinity', text)
+            for value in ('CPUQuota=100%', 'MemoryHigh=2G', 'IOSchedulingClass=idle'):
+                self.assertIn(value, text)
+            windows = schedule._windows(['python.exe', '-m', 'modelhub_kit', 'maintain'], state)
+            self.assertIn(', 0, True', windows['files'][windows['primary']].decode('utf-16'))
+            with patch.object(schedule, '_run', return_value=subprocess.CompletedProcess([], 0, b'"User","S-1-5-21-123"\n', b'')):
+                payload = schedule._windows_xml(windows)
+            self.assertIn('PT0S', payload.decode('utf-16'))
+
     @staticmethod
     def compact_response(*, active=False, unknown=False):
         return {'exit': 0, 'timedOut': False, 'outputTruncated': False,
@@ -287,6 +330,12 @@ function Get-CimInstance {
             self.assertEqual((app / 'docs').stat().st_mode & 0o777, 0o775)
 
     def test_installer_allowlist_and_uninstaller_agree(self):
+        shell = (ROOT / 'scripts/install.sh').read_text()
+        darwin = shell.split('if [ "$(uname -s)" = Darwin ]; then', 1)[1].split('\n    else', 1)[0]
+        self.assertIn('python-prerequisite-custody-unavailable', darwin)
+        self.assertIn('https://www.python.org/downloads/', darwin)
+        self.assertIn('exit 75', darwin)
+        self.assertNotIn('brew install', darwin)
         self.assertEqual(set(installer.FILES + installer.OPTIONAL_FILES + ('launch.py',)),
                          set(lifecycle.APPLICATION_FILES))
 

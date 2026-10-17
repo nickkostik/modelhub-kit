@@ -1,4 +1,6 @@
 import json
+import ctypes
+import io
 import os
 import pathlib
 import subprocess
@@ -7,9 +9,9 @@ import tempfile
 import types
 import unittest
 import urllib.request
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
-from modelhub_kit import cache, catalog, core, integration, updater
+from modelhub_kit import cache, catalog, core, integration, updater, mutation
 
 
 def client_environment(home):
@@ -21,6 +23,158 @@ def client_environment(home):
 
 
 class CoreTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux isolated subreaper fixture')
+    def test_mutation_follows_orphaned_new_session_past_observation_budget(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = pathlib.Path(temporary) / 'finished'
+            descendant = 'import pathlib,time;time.sleep(.15);pathlib.Path(' + repr(str(marker)) + ').write_text("done")'
+            parent = 'import subprocess,sys;subprocess.Popen([sys.executable,"-c",' + repr(descendant) + '],start_new_session=True)'
+            result = core.run_mutation([sys.executable, '-c', parent], timeout=.01)
+            self.assertEqual(marker.read_text(), 'done')
+            self.assertEqual(result['exit'], 0)
+            self.assertTrue(result['treeComplete'])
+            self.assertTrue(result['observationExceeded'])
+            self.assertFalse(result['timedOut'])
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux isolated subreaper fixture')
+    def test_mutation_descendant_failure_is_not_parent_success(self):
+        descendant = 'import time;time.sleep(.03);raise SystemExit(9)'
+        parent = 'import subprocess,sys;subprocess.Popen([sys.executable,"-c",' + repr(descendant) + '])'
+        result = core.run_mutation([sys.executable, '-c', parent], timeout=.01)
+        self.assertNotEqual(result['exit'], 0)
+        self.assertTrue(result['treeComplete'])
+
+    def test_mutation_unsupported_platform_queues_before_spawning(self):
+        with patch.object(mutation.sys, 'platform', 'darwin'), patch.object(mutation.subprocess, 'Popen') as child:
+            with self.assertRaisesRegex(core.GuardError, 'custody-unavailable'):
+                mutation.run(['vendor', 'install'])
+            child.assert_not_called()
+
+    def test_windows_mutation_follows_job_without_destructive_finish(self):
+        events = []
+        class Job:
+            def __init__(self, **kwargs):
+                self.assert_flags = kwargs
+                events.append(('job', kwargs))
+            def attach_resume(self, child): events.append('attached')
+            def wait_empty(self): events.append('empty')
+            def close(self): events.append('closed')
+        class Child:
+            stdout = io.BytesIO(b'vendor output')
+            stdin = None
+            returncode = 0
+            def wait(self): events.append('parent-exited'); return 0
+            def kill(self): raise AssertionError('running mutation must not be killed')
+        with patch.object(mutation, 'os', types.SimpleNamespace(name='nt')), patch.object(mutation, 'WindowsJob', Job), \
+                patch.object(mutation.subprocess, 'Popen', return_value=Child()), \
+                patch.object(mutation.subprocess, 'CREATE_NO_WINDOW', 0x08000000, create=True):
+            result = mutation.run(['vendor', 'install'], timeout=0)
+        self.assertEqual(events[0], ('job', {'kill_on_close': False}))
+        self.assertLess(events.index('parent-exited'), events.index('empty'))
+        self.assertEqual(events[-1], 'closed')
+        self.assertTrue(result['treeComplete'])
+
+    def test_windows_natural_job_wait_retries_unknown_and_active_counts(self):
+        calls = []
+        counts = iter([None, 2, 1, 0])
+        class Api:
+            def QueryInformationJobObject(self, handle, kind, buffer, size, returned):
+                value = next(counts); calls.append(value)
+                if value is None: return False
+                buffer[40:44] = value.to_bytes(4, 'little')
+                return True
+            def TerminateJobObject(self, *args): raise AssertionError('destructive Job call')
+        job = core.WindowsJob.__new__(core.WindowsJob)
+        job.c, job.api, job.handle = ctypes, Api(), 1
+        with patch.object(core.time, 'sleep'):
+            job.wait_empty()
+        self.assertEqual(calls, [None, 2, 1, 0])
+
+    def test_mutation_delivery_and_reader_errors_close_input_and_follow_child(self):
+        stream = MagicMock()
+        stream.closed = False
+        stream.write.side_effect = OSError('fixture write failure')
+        def close(): stream.closed = True
+        stream.close.side_effect = close
+        child = MagicMock(stdin=stream, returncode=1)
+        child.stdout.read.side_effect = OSError('fixture output failure')
+        child.wait.side_effect = lambda: self.assertTrue(stream.closed)
+        with patch.object(mutation.subprocess, 'Popen', return_value=child):
+            result = mutation.run(['vendor', 'install'])
+        self.assertTrue(result['observationFailed'])
+        self.assertTrue(result['treeComplete'])
+        self.assertGreaterEqual(child.wait.call_count, 1)
+        child.kill.assert_not_called()
+
+    def test_durable_windows_publication_uses_write_through(self):
+        move = MagicMock(return_value=1)
+        with patch.object(core, 'os', types.SimpleNamespace(name='nt')), \
+                patch.object(ctypes, 'WinDLL', return_value=types.SimpleNamespace(MoveFileExW=move), create=True):
+            core._replace_file('source', 'target', durable=True)
+        move.assert_called_once_with('source', 'target', 0x1 | 0x8)
+
+    def test_npm_install_uses_natural_custody_and_macos_queues(self):
+        for system in ('Linux', 'Darwin'):
+            with self.subTest(system=system), tempfile.TemporaryDirectory() as folder:
+                prefix, state = pathlib.Path(folder) / 'prefix', pathlib.Path(folder) / 'state'
+                metadata = updater.package_file(prefix, '@qwen-code/qwen-code')
+                data = {'name': '@qwen-code/qwen-code', 'version': '1.0.0', 'bin': {'qwen': 'cli.js'}}
+                core.atomic_json(metadata, data)
+                entry = metadata.parent / 'cli.js'; core.atomic_text(entry, '// fixture')
+                def query(argv, **kwargs):
+                    self.assertNotIn('install', argv)
+                    return {'exit': 0, 'output': json.dumps({'platform': 'linux', 'arch': 'x64'}) if '-p' in argv else str(prefix)}
+                def install(argv, **kwargs):
+                    self.assertIn('install', argv)
+                    core.atomic_json(metadata, dict(data, version='1.1.0'))
+                    return {'exit': 0, 'output': '', 'treeComplete': True}
+                with patch.object(updater, 'npm_command', return_value=['npm']), patch.object(updater, 'run', side_effect=query), \
+                        patch.object(updater, 'run_mutation', side_effect=install) as mutate, \
+                        patch.object(updater.shutil, 'which', return_value=str(entry)), \
+                        patch.object(updater.platform, 'system', return_value=system), \
+                        patch.object(updater, 'http_json', return_value=({'version': '1.1.0'}, {})), \
+                        patch.object(cache, 'process_inventory', return_value=[]):
+                    result = updater.update({'tools': ['qwen']}, state)
+                self.assertEqual(result[0]['status'], 'updated' if system == 'Linux' else 'queued')
+                self.assertEqual(mutate.call_count, int(system == 'Linux'))
+
+    def test_current_codex_health_failure_requires_explicit_selected_repair(self):
+        for repair in (False, True):
+            with self.subTest(repair=repair), tempfile.TemporaryDirectory() as folder:
+                prefix, state = pathlib.Path(folder) / 'prefix', pathlib.Path(folder) / 'state'
+                metadata = updater.package_file(prefix, '@openai/codex')
+                data = {'name': '@openai/codex', 'version': '1.0.0', 'bin': {'codex': 'cli.js'}}
+                core.atomic_json(metadata, data); entry = metadata.parent / 'cli.js'; core.atomic_text(entry, '// fixture')
+                def query(argv, **kwargs):
+                    self.assertNotIn('install', argv)
+                    return {'exit': 0, 'output': json.dumps({'platform': 'linux', 'arch': 'x64'}) if '-p' in argv else str(prefix)}
+                with patch.object(updater, 'npm_command', return_value=['npm']), patch.object(updater, 'run', side_effect=query), \
+                        patch.object(updater, 'run_mutation', return_value={'exit': 0, 'output': '', 'treeComplete': True}) as mutate, \
+                        patch.object(updater.shutil, 'which', return_value=str(entry)), \
+                        patch.object(updater, 'healthy_codex', return_value=repair), \
+                        patch.object(updater, 'http_json', return_value=({'version': '1.0.0'}, {})), \
+                        patch.object(cache, 'process_inventory', return_value=[]):
+                    result = updater.update({'tools': ['codex']}, state, selected=['codex'] if repair else None, repair=repair)
+                self.assertEqual(result[0]['status'], 'updated' if repair else 'repair-needed')
+                self.assertEqual(mutate.call_count, int(repair))
+        with self.assertRaisesRegex(core.GuardError, 'repair-requires-explicit-tool-selection'):
+            updater.update({'tools': ['codex']}, pathlib.Path('unused-fixture'), repair=True)
+
+    def test_owned_atomic_helper_has_linux_custody_and_distinct_darwin_staging(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home, state = pathlib.Path(folder), pathlib.Path(folder) / 'state'
+            for system in ('Linux', 'Darwin'):
+                with self.subTest(system=system), patch.object(updater, 'tools', return_value={'fixture': {'command': 'fixture', 'manager': 'native-omp'}}), \
+                        patch.object(updater.shutil, 'which', return_value=str(home / '.local/bin/fixture')), \
+                        patch.object(updater.pathlib.Path, 'home', return_value=home), \
+                        patch.object(updater.platform, 'system', return_value=system), \
+                        patch.object(updater, 'run', return_value={'exit': 0, 'output': '{"changed":false}'}) as query, \
+                        patch.object(updater, 'run_mutation', return_value={'exit': 0, 'output': '{"changed":false}', 'treeComplete': True}) as mutate:
+                    result = updater.update({'tools': ['fixture']}, state)
+                self.assertEqual(result[0]['status'], 'current')
+                self.assertEqual(mutate.call_count, int(system == 'Linux'))
+                self.assertEqual(query.call_count, int(system == 'Darwin'))
+
     def test_expected_text_refuses_concurrent_config_edit(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / 'config.json'

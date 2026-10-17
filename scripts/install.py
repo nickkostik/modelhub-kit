@@ -17,7 +17,7 @@ import sys
 import tempfile
 
 FILES = (
-    "modelhub_kit/__init__.py", "modelhub_kit/__main__.py", "modelhub_kit/core.py",
+    "modelhub_kit/__init__.py", "modelhub_kit/__main__.py", "modelhub_kit/core.py", "modelhub_kit/mutation.py",
     "modelhub_kit/updater.py", "modelhub_kit/catalog.py", "modelhub_kit/integration.py",
     "modelhub_kit/projection.py", "modelhub_kit/acp.py", "modelhub_kit/lifecycle.py",
     "modelhub_kit/cache.py", "modelhub_kit/fleet.py", "modelhub_kit/schedule.py", "modelhub_kit/tools.json",
@@ -205,7 +205,11 @@ def node_prerequisite(allow_install: bool = False) -> dict:
               "note": "Choose a supported Node 22+ package; the application itself needs only Python."}
     if not allow_install or not manager or not shutil.which(manager[0]):
         return result
+    if sys.platform == "darwin":
+        result["prerequisiteInstallStatus"] = "queued-custody-unavailable"
+        return result
     try:
+        from modelhub_kit.core import GuardError, run_mutation
         package_manager = next((name for name in ("apt-get", "dnf") if name in manager), None)
         if package_manager:
             query = (["apt-cache", "policy", "nodejs"] if package_manager == "apt-get" else
@@ -217,11 +221,12 @@ def node_prerequisite(allow_install: bool = False) -> dict:
             if not found or int(found.group(1)) < 22:
                 result["note"] = "The configured repository does not advertise Node 22+. Use an official Node LTS download; no older Node package was installed."
                 return result
-        options = _quiet_child_options()
-        operation = subprocess.run(manager, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, timeout=600,
-                                   env=dict(os.environ, HOMEBREW_NO_AUTO_UPDATE="1"), **options)
-        result["prerequisiteInstallExit"] = operation.returncode
+        operation = run_mutation(manager, timeout=600,
+                                 env=dict(os.environ, HOMEBREW_NO_AUTO_UPDATE="1"))
+        result["prerequisiteInstallExit"] = operation["exit"]
+        if operation.get("treeComplete") is not True or operation.get("observationFailed") or operation["exit"]:
+            result["prerequisiteInstallStatus"] = "queued-native-mutation-unverified"
+            return result
         candidates = [shutil.which("node")]
         if sys.platform == "darwin":
             prefix = subprocess.check_output(["brew", "--prefix", "node@24"], timeout=10, stderr=subprocess.DEVNULL).decode().strip()
@@ -235,7 +240,7 @@ def node_prerequisite(allow_install: bool = False) -> dict:
             installed = _node_version(candidate)
             if installed and int(installed.split(".")[0]) >= 22:
                 return {"ready": True, "version": installed, "changed": True, "executable": candidate}
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, GuardError):
         result["prerequisiteInstallStatus"] = "unavailable-or-permission-required"
     result["note"] = "A compatible native package was not verified. Install an official Node LTS runtime and run the installer again."
     return result

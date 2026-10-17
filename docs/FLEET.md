@@ -53,6 +53,14 @@ modelhub-kit fleet --inventory "$HOME/fleet.json" --apply
 
 It runs each host's installed `maintain` command, using that host's own configuration. Nested queued or failed maintenance work is not reported as completed. Offline, busy, and mismatched boots stay in the single overwritten `fleet-status.json` receipt for the next invocation. This command does not deliver source or reinstall the application. It does not create a retry daemon; invoke it again or schedule it explicitly through your own controller.
 
+Before a mutating SSH request, the controller durably records its original
+operation identity. A matching terminal receipt can resolve that operation
+while still reporting deferred work as queued. A disconnect, timeout, or
+unbound response leaves the outcome unknown and blocks another mutation for
+that alias. Verify the original remote outcome before resolving that fence;
+terminating the local SSH observer does not prove that its remote installer
+has stopped.
+
 ## Delivery guards and resource use
 
 Before staging, a read-only SSH probe checks the actual OS and boot. A second, finite SSH session repeats those checks before its first write and again before installation. On Unix, the archive travels through standard input in bounded chunks. On Windows, a small UTF-16LE encoded loader first receives a compressed, length-bound PowerShell script prefix into memory, checks its SHA-256 hash, and verifies its bounded decoded length. The loader reads the native standard-input handle through a file stream, avoiding the Windows PowerShell console-stream SSH blocking bug. It then reads exactly the declared archive length, checks its SHA-256 in memory, and repeats the boot check before invoking the script. The script consumes that buffered archive through a memory stream, avoiding standard-input interference from PowerShell or child processes. Archive buffering uses at most 8 MiB; no script is written to disk. Both receivers stop at their declared byte counts. The Windows loader stays below 7,500 command-line characters so it also fits the default command shell limit. The Windows installer invocation uses a process-scoped execution-policy option; no machine or user execution policy is saved.

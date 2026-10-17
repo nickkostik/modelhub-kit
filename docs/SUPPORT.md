@@ -19,6 +19,10 @@ specific unmet guard; it does not mean that the vendor lacks that operating syst
 | `omp` | Existing recognized standalone macOS installation, with official GitHub/build-service SHA-256 metadata. |
 | `droid` | Existing recognized Unix native installation, with Factory's official SHA-256. The vendor process-killing installer is never run. |
 
+Generic npm mutations use descendant custody on Linux and Windows. On macOS,
+discovery remains available, but those mutations queue until a suitable native
+backend exists. The separate verified atomic native adapters remain available.
+
 T3's upstream CLI does not publish an Intel macOS binary. Its npm adapter reports
 `unsupported-vendor-platform` there; the separate upstream Electron desktop app
 has a different platform matrix. Native Windows OMP/Droid maintenance remains a
@@ -60,6 +64,7 @@ Linux signed apt/dnf installations, recognized owned Arch packages, official
 Homebrew casks and Windows Cursor/Devin Inno packages have native adapters. Package metadata must identify
 the actual installation and vendor channel. Desktop version discovery reads
 static package/bundle/registry metadata; it never opens the GUI with `--version`.
+Generic Homebrew mutations currently queue when descendant custody is unavailable.
 Busy or unknown applications defer before metadata-refresh mutations and are
 checked again immediately before the native transaction. Applications are not
 closed, restarted, or opened to verify an update.

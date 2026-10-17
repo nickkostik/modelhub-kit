@@ -120,6 +120,20 @@ def _checked(command, argv, timeout=30, env=None):
     return result['output'].strip()
 
 
+def _mutate(command, argv, timeout=300, env=None):
+    result = _run(command, argv, timeout, env)
+    if result.get('treeComplete') is not True or result.get('observationFailed'):
+        raise core.GuardError('vendor-mutation-custody-unknown')
+    return result
+
+
+def _checked_mutation(command, argv, timeout=300, env=None):
+    result = _mutate(command, argv, timeout, env)
+    if result['exit']:
+        raise core.GuardError('native-vendor-mutation-failed')
+    return result['output'].strip()
+
+
 def _file(path, limit=MAX_METADATA):
     path = pathlib.Path(path)
     info = path.lstat()
@@ -356,7 +370,7 @@ def parse_winget_show(text, product):
     return {'target': version, 'sha256': digest.lower(), 'url': url}
 
 
-def _windows_plan(product, app, architecture, command, refresh=False):
+def _windows_plan(product, app, architecture, command, refresh=False, mutation=core.run_mutation):
     if product == 'grokbot':
         raise core.GuardError('grokbot-safe-unattended-windows-installer-unverified')
     if app:
@@ -376,7 +390,7 @@ def _windows_plan(product, app, architecture, command, refresh=False):
     args = ['--id', identifier, '--exact', '--source', 'winget', '--scope', scope,
             '--architecture', architecture]
     if refresh:
-        _checked(command, ['winget', 'source', 'update', '--name', 'winget', '--disable-interactivity'], timeout=120)
+        _checked_mutation(mutation, ['winget', 'source', 'update', '--name', 'winget', '--disable-interactivity'], timeout=120)
     manifest = parse_winget_show(_checked(command, ['winget', 'show', *args, '--locale', 'en-US',
                                 '--accept-source-agreements', '--disable-interactivity']), product)
     if (app and scope == 'machine' and not app['administrator']
@@ -439,7 +453,7 @@ def _package_stable_version(value):
     return match[1]
 
 
-def _linux_plan(product, app, command, refresh=False):
+def _linux_plan(product, app, command, refresh=False, mutation=core.run_mutation):
     spec = PRODUCTS[product]
     package = spec['packages'][0]
     if app:
@@ -447,7 +461,7 @@ def _linux_plan(product, app, command, refresh=False):
         if owner['exit']:
             rpm_owner = _run(command, ['rpm', '-qf', '--qf', '%{NAME}', app['metadata']])
             if not rpm_owner['exit']:
-                return _rpm_plan(product, app, rpm_owner['output'].strip(), command, refresh=refresh)
+                return _rpm_plan(product, app, rpm_owner['output'].strip(), command, refresh=refresh, mutation=mutation)
             arch_owner = _run(command, ['pacman', '-Qoq', app['metadata']])
             if not arch_owner['exit'] and arch_owner['output'].strip() in spec['packages']:
                 return _arch_plan(product, app, arch_owner['output'].strip(), command)
@@ -478,7 +492,7 @@ def _linux_plan(product, app, command, refresh=False):
     if not source:
         raise core.GuardError('existing-signed-stable-repository-unverified')
     if refresh:
-        _checked(command, _elevated(['apt-get', 'update',
+        _checked_mutation(mutation, _elevated(['apt-get', 'update',
                     '-o', 'Dir::Etc::sourcelist=' + str(source), '-o', 'Dir::Etc::sourceparts=-',
                     '-o', 'APT::Get::List-Cleanup=0', '-o', 'Acquire::AllowInsecureRepositories=false',
                     '-o', 'Acquire::AllowDowngradeToInsecureRepositories=false',
@@ -926,7 +940,7 @@ def arch_package(product, app, receipt, release, vendor, output, command):
     return snapshots
 
 
-def arch_apply(product, app, plan, command, processes=None):
+def arch_apply(product, app, plan, command, processes=None, mutation=core.run_mutation):
     receipt, release = plan['_arch'], plan['_arch']['release']
     lock = pathlib.Path('/var/lib/pacman/db.lck')
     boot = pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()
@@ -954,7 +968,7 @@ def arch_apply(product, app, plan, command, processes=None):
                 or any(_retained_identity(pathlib.Path(name), True) != snapshot['concurrent']
                        for name, snapshot in retained.items())):
             raise core.GuardError('native-arch-pretransaction-state-changed')
-        result = _run(command, _elevated(['pacman', '-U', '--needed', '--noconfirm', str(package)]), timeout=240)
+        result = _mutate(mutation, _elevated(['pacman', '-U', '--needed', '--noconfirm', str(package)]), timeout=240)
         if result['exit']:
             return result
         if any(_retained_identity(pathlib.Path(name)) != snapshot['content'] for name, snapshot in retained.items()):
@@ -962,11 +976,11 @@ def arch_apply(product, app, plan, command, processes=None):
         return dict(result, artifactSha256=digest)
 
 
-def _rpm_plan(product, app, package, command, refresh=False):
+def _rpm_plan(product, app, package, command, refresh=False, mutation=core.run_mutation):
     if package not in PRODUCTS[product]['packages']:
         raise core.GuardError('native-package-owner-unverified')
     # The exact enabled owning repository must retain vendor GPG verification.
-    rows = _checked(command, ['dnf', '-q', *(['--refresh'] if refresh else ['--cacheonly']),
+    rows = (_checked_mutation if refresh else _checked)(mutation if refresh else command, ['dnf', '-q', *(['--refresh'] if refresh else ['--cacheonly']),
                              'repoquery', '--latest-limit=1', '--qf',
                              '%{name}|%{version}|%{release}|%{repoid}', package]).splitlines()
     parsed = [row.split('|') for row in rows if row.startswith(package + '|')]
@@ -992,7 +1006,7 @@ def _rpm_plan(product, app, package, command, refresh=False):
          '--setopt=gpgcheck=1', 'upgrade', package + '-' + version + '-' + release])}
 
 
-def _brew_plan(product, app, command, fetch, refresh=False):
+def _brew_plan(product, app, command, fetch, refresh=False, mutation=core.run_mutation):
     env = dict(os.environ, HOMEBREW_NO_AUTO_UPDATE='1', HOMEBREW_NO_INSTALL_CLEANUP='1',
                HOMEBREW_NO_UPGRADE_QUIT_CASKS='1')
     listed = _checked(command, ['brew', 'list', '--cask', '--versions'], env=env)
@@ -1000,7 +1014,7 @@ def _brew_plan(product, app, command, fetch, refresh=False):
     if not app:
         if tokens:
             raise core.GuardError('native-homebrew-receipt-with-missing-app-preserved')
-        return _brew_install_plan(product, command, fetch, env, refresh=refresh)
+        return _brew_install_plan(product, command, fetch, env, refresh=refresh, mutation=mutation)
     for token in tokens:
         info = json.loads(_checked(command, ['brew', 'info', '--json=v2', '--cask', token], env=env))
         casks = info.get('casks', [])
@@ -1034,7 +1048,7 @@ def _brew_plan(product, app, command, fetch, refresh=False):
         if any(cask.get(key) != latest.get(key) for key in ('version', 'url', 'sha256')):
             if not refresh:
                 raise Deferred('native-homebrew-metadata-refresh-required', latest['version'])
-            _checked(command, ['brew', 'update', '--quiet'], timeout=120, env=env)
+            _checked_mutation(mutation, ['brew', 'update', '--quiet'], timeout=120, env=env)
             info = json.loads(_checked(command, ['brew', 'info', '--json=v2', '--cask', token], env=env))
             rows = info.get('casks', [])
             if (len(rows) != 1 or rows[0].get('tap') != 'homebrew/cask'
@@ -1048,7 +1062,7 @@ def _brew_plan(product, app, command, fetch, refresh=False):
     raise core.GuardError('native-homebrew-receipt-does-not-own-bundle')
 
 
-def _brew_install_plan(product, command, fetch, env, refresh=False):
+def _brew_install_plan(product, command, fetch, env, refresh=False, mutation=core.run_mutation):
     # Only an explicitly selected missing product reaches here. Grok Bot has
     # no verified cask adapter: never infer one from its display name.
     if product == 'grokbot':
@@ -1088,7 +1102,7 @@ def _brew_install_plan(product, command, fetch, env, refresh=False):
         if not matches:
             if not refresh:
                 raise Deferred('native-homebrew-metadata-refresh-required', latest['version'])
-            _checked(command, ['brew', 'update', '--quiet'], timeout=120, env=env)
+            _checked_mutation(mutation, ['brew', 'update', '--quiet'], timeout=120, env=env)
             info = json.loads(_checked(command, ['brew', 'info', '--json=v2', '--cask', selected], env=env))
             rows = info.get('casks', [])
             if (len(rows) != 1 or rows[0].get('tap') != 'homebrew/cask'
@@ -1112,7 +1126,8 @@ def grokbot_release(system, architecture, fetch):
 
 
 def reconcile(product, *, home, state, install_missing=False, dry_run=False,
-              system=None, architecture=None, command=core.run, fetch=core.http_json, processes=None):
+              system=None, architecture=None, command=core.run, fetch=core.http_json, processes=None,
+              mutation=core.run_mutation):
     """Reconcile one selected desktop. Caller owns the global writer lock.
 
     ``processes`` is an optional 'idle'/'busy'/'unknown' value or callable(app)
@@ -1128,6 +1143,9 @@ def reconcile(product, *, home, state, install_missing=False, dry_run=False,
     if product not in PRODUCTS:
         raise core.GuardError('unknown-native-desktop-product')
     system = system or platform.system()
+    if system == 'Darwin':
+        def mutation(*args, **kwargs):
+            raise core.GuardError('vendor-mutation-custody-unavailable')
     architecture = {'amd64': 'x64', 'x86_64': 'x64', 'aarch64': 'arm64'}.get(
         (architecture or platform.machine()).lower(), (architecture or platform.machine()).lower())
     if system not in ('Linux', 'Darwin', 'Windows'):
@@ -1155,7 +1173,7 @@ def reconcile(product, *, home, state, install_missing=False, dry_run=False,
             result['target'] = grokbot_release(system, architecture, fetch)
         if system == 'Darwin':
             try:
-                plan = _brew_plan(product, app, command, fetch, refresh=not dry_run)
+                plan = _brew_plan(product, app, command, fetch, refresh=not dry_run, mutation=mutation)
             except (FileNotFoundError, core.GuardError) as error:
                 if isinstance(error, core.GuardError) and str(error) not in (
                         'native-homebrew-receipt-does-not-own-bundle',
@@ -1168,8 +1186,8 @@ def reconcile(product, *, home, state, install_missing=False, dry_run=False,
                 plan = macos_apps.plan(product, app, home=home, state=state,
                                         command=command, fetch=fetch, architecture=architecture)
         else:
-            plan = (_windows_plan(product, app, architecture, command, refresh=not dry_run) if system == 'Windows'
-                    else _linux_plan(product, app, command, refresh=not dry_run))
+            plan = (_windows_plan(product, app, architecture, command, refresh=not dry_run, mutation=mutation) if system == 'Windows'
+                    else _linux_plan(product, app, command, refresh=not dry_run, mutation=mutation))
         result.update({key: value for key, value in plan.items() if key not in ('argv', 'env', 'url', '_arch', '_dmg')})
         if app and version_tuple(plan['target']) <= version_tuple(app['version']):
             result['status'] = 'current' if version_tuple(plan['target']) == version_tuple(app['version']) else 'newer-installation-preserved'
@@ -1190,8 +1208,8 @@ def reconcile(product, *, home, state, install_missing=False, dry_run=False,
                 updated = macos_apps.apply(product, app, plan, home=home, state=state,
                                            command=command, fetch=fetch, processes=processes)
             else:
-                updated = (arch_apply(product, app, plan, command, processes) if '_arch' in plan else
-                           _run(command, plan['argv'], timeout=300, env=plan.get('env')))
+                updated = (arch_apply(product, app, plan, command, processes, mutation=mutation) if '_arch' in plan else
+                           _mutate(mutation, plan['argv'], timeout=300, env=plan.get('env')))
             for key in ('artifactSha256', 'sha256', 'digestSource'):
                 if key in updated:
                     result[key] = updated[key]

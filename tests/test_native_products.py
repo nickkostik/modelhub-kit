@@ -257,6 +257,47 @@ class NativeProducts(unittest.TestCase):
 
 
 class NativeDesktops(unittest.TestCase):
+    def test_vendor_apply_uses_mutation_runner_and_waits_for_complete_tree(self):
+        app = {'root': '/owned/app', 'version': '1.0.0'}
+        after = dict(app, version='2.0.0')
+        for complete in (False, True):
+            with self.subTest(complete=complete), tempfile.TemporaryDirectory() as folder, \
+                    patch.object(desktop, 'discover', side_effect=[app, app, app, after]), \
+                    patch.object(desktop, 'process_state', return_value='idle'), \
+                    patch.object(desktop, '_linux_plan', return_value={'target': '2.0.0', 'argv': ['vendor', 'install']}), \
+                    patch.object(desktop.core, 'run') as query:
+                calls = []
+                def mutate(argv, **kwargs):
+                    calls.append(argv)
+                    return {'exit': 0, 'output': '', 'treeComplete': complete, 'timedOut': False, 'observationExceeded': True}
+                result = desktop.reconcile('cursor-desktop', home=folder, state=folder,
+                                           system='Linux', mutation=mutate)
+                self.assertEqual(calls, [['vendor', 'install']])
+                self.assertEqual(result['status'], 'updated' if complete else 'queued')
+                query.assert_not_called()
+
+    def test_macos_generic_vendor_mutation_queues_without_launch(self):
+        app = {'root': '/owned/App.app', 'version': '1.0.0'}
+        with tempfile.TemporaryDirectory() as folder, patch.object(desktop, 'discover', return_value=app), \
+                patch.object(desktop, 'process_state', return_value='idle'), \
+                patch.object(macos_apps, 'cleanup_pending'), \
+                patch.object(desktop, '_brew_plan', return_value={'target': '2.0.0', 'argv': ['brew', 'upgrade']}), \
+                patch.object(desktop.core, 'run_mutation') as child:
+            result = desktop.reconcile('cursor-desktop', home=folder, state=folder, system='Darwin')
+            self.assertEqual(result['status'], 'queued')
+            self.assertEqual(result['reason'], 'vendor-mutation-custody-unavailable')
+            child.assert_not_called()
+
+    def test_winget_source_refresh_is_a_mutation_not_a_query(self):
+        calls = []
+        def mutation(argv, **kwargs):
+            calls.append(argv)
+            raise GuardError('fixture-stop-before-any-command')
+        with self.assertRaisesRegex(GuardError, 'fixture-stop'):
+            desktop._windows_plan('cursor-desktop', None, 'x64', lambda *a, **k: self.fail('query before refresh'),
+                                  refresh=True, mutation=mutation)
+        self.assertEqual(calls, [['winget', 'source', 'update', '--name', 'winget', '--disable-interactivity']])
+
     def test_linux_shared_electron_and_denied_visibility_never_report_idle(self):
         proc=MagicMock();proc.iterdir.side_effect=lambda:iter([Path('/proc/123')])
         real_path=Path

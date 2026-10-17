@@ -25,13 +25,9 @@ native_install() {
 if ! find_python; then
     printf '%s\n' 'Python 3.11+ is required. Official installers: https://www.python.org/downloads/' >&2
     if [ "$(uname -s)" = Darwin ]; then
-        printf '%s\n' 'With Homebrew: brew install python@3.13' >&2
-        [ "$allow_prerequisites" = 1 ] || exit 1
-        command -v brew >/dev/null 2>&1 || exit 1
-        HOMEBREW_NO_AUTO_UPDATE=1 brew install python@3.13 </dev/null
-        brew_python_prefix=$(brew --prefix python@3.13)
-        python_command="$brew_python_prefix/bin/python3.13"
-        "$python_command" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'
+        printf '%s\n' 'Install Python 3.11+ from https://www.python.org/downloads/ and rerun this installer.' >&2
+        printf '%s\n' '{"status":"queued","reason":"python-prerequisite-custody-unavailable","officialDownload":"https://www.python.org/downloads/"}'
+        exit 75
     else
         if command -v pacman >/dev/null 2>&1; then
             printf '%s\n' 'Native package command: sudo pacman -S --needed python' >&2

@@ -16,6 +16,101 @@ from modelhub_kit.core import GuardError, atomic_json, identity
 
 
 class FleetDeliveryTests(unittest.TestCase):
+    def test_observer_timeout_retains_original_fence_and_prevents_replay(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder); state = root / 'state'; inventory = root / 'fleet.json'
+            atomic_json(inventory, {'version': 1, 'hosts': [{'alias': 'workstation', 'os': 'linux'}]})
+            responses = [{'exit': 0, 'output': 'modelhub-kit-probe-v1\nlinux\nfixture\nboot-a\n'},
+                         {'exit': -15, 'output': '', 'timedOut': True}]
+            with patch.object(fleet, 'run', side_effect=responses) as child:
+                first = fleet.reconcile(inventory, state, apply=True)
+            self.assertFalse(first['hosts'][0]['custodyKnown'])
+            fence = json.loads((state / 'fleet-inflight.json').read_text())
+            original = fence['operations']['workstation']['id']
+            with patch.object(fleet, 'run') as child:
+                second = fleet.reconcile(inventory, state, apply=True)
+                child.assert_not_called()
+            self.assertEqual(second['hosts'][0]['reason'], 'remote-operation-inflight')
+            self.assertEqual(json.loads((state / 'fleet-inflight.json').read_text())['operations']['workstation']['id'], original)
+
+    def test_verified_terminal_delivery_alone_clears_fence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder); state = root / 'state'; inventory = root / 'fleet.json'
+            self.fixture(root)
+            atomic_json(inventory, {'version': 1, 'hosts': [{'alias': 'workstation', 'os': 'linux'}]})
+            def child(argv, **kwargs):
+                if 'input_data' not in kwargs:
+                    return {'exit': 0, 'output': 'modelhub-kit-probe-v1\nlinux\nfixture\nboot-a\n'}
+                self.assertIn('workstation', json.loads((state / 'fleet-inflight.json').read_text())['operations'])
+                operation = json.loads((state / 'fleet-inflight.json').read_text())['operations']['workstation']['id']
+                return {'exit': 0, 'output': json.dumps(dict(fleet._delivery_context(operation), status='installed-or-current', cleanupComplete=True, exitCode=0)),
+                        'inputSent': len(kwargs['input_data']), 'inputFailed': False, 'timedOut': False}
+            with patch.object(fleet, 'run', side_effect=child):
+                result = fleet.reconcile(inventory, state, apply=True, source=root, enroll=True)
+            self.assertEqual(result['hosts'][0]['status'], 'completed')
+            self.assertEqual(json.loads((state / 'fleet-inflight.json').read_text())['operations'], {})
+
+    def test_bound_terminal_queued_pass_clears_fence_without_claiming_success(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder); state = root / 'state'; inventory = root / 'fleet.json'
+            atomic_json(inventory, {'version': 1, 'hosts': [{'alias': 'workstation', 'os': 'linux'}]})
+            def child(argv, **kwargs):
+                if 'fleet-inflight.json' not in {p.name for p in state.iterdir()}:
+                    return {'exit': 0, 'output': 'modelhub-kit-probe-v1\nlinux\nfixture\nboot-a\n'}
+                operation = json.loads((state / 'fleet-inflight.json').read_text())['operations']['workstation']['id']
+                self.assertIn('--operation-id ' + operation, argv[-1])
+                receipt = {'format': 'modelhub-kit-maintenance-v1', 'version': 1, 'operationId': operation,
+                           'operationTerminal': True, 'action': 'maintain', 'status': 'queued', 'modelCalls': 0,
+                           'startedAt': 'start', 'completedAt': 'end', 'tools': [{'status': 'queued'}],
+                           'catalogs': [], 'integrations': [], 'cache': {'status': 'absent'}}
+                return {'exit': 75, 'output': json.dumps(receipt)}
+            with patch.object(fleet, 'run', side_effect=child):
+                result = fleet.reconcile(inventory, state, apply=True)
+            self.assertEqual(result['hosts'][0]['status'], 'queued')
+            self.assertTrue(result['hosts'][0]['custodyKnown'])
+            self.assertEqual(json.loads((state / 'fleet-inflight.json').read_text())['operations'], {})
+
+    def test_unbound_malformed_or_wrong_operation_receipt_is_not_terminal(self):
+        operation = 'a' * 32
+        good = dict(fleet._delivery_context(operation), status='queued', cleanupComplete=True, exitCode=75)
+        self.assertTrue(fleet._terminal_observed(good, operation, True, 75))
+        for bad in ({}, dict(good, operationId='b' * 32), dict(good, operationTerminal=False),
+                    dict(good, cleanupComplete=False), dict(good, status=[]), dict(good, exitCode=True), dict(good, exitCode='75')):
+            self.assertFalse(fleet._terminal_observed(bad, operation, True, 75))
+        self.assertFalse(fleet._terminal_observed(good, operation, True, 0))
+
+    def test_windows_terminal_installer_failure_clears_only_matching_exit_fence(self):
+        for observed_exit in (1, 255):
+            with self.subTest(observed_exit=observed_exit), tempfile.TemporaryDirectory() as folder:
+                root = pathlib.Path(folder); state = root / 'state'; inventory = root / 'fleet.json'
+                self.fixture(root)
+                atomic_json(inventory, {'version': 1, 'hosts': [{'alias': 'workstation', 'os': 'windows'}]})
+                def child(argv, **kwargs):
+                    if 'input_data' not in kwargs:
+                        return {'exit': 0, 'output': json.dumps({'os': 'windows', 'variant': None, 'boot': 'boot-a'})}
+                    operation = json.loads((state / 'fleet-inflight.json').read_text())['operations']['workstation']['id']
+                    receipt = dict(fleet._delivery_context(operation), status='queued', cleanupComplete=True, exitCode=1)
+                    return {'exit': observed_exit, 'output': json.dumps(receipt), 'timedOut': False,
+                            'inputSent': len(kwargs['input_data']), 'inputFailed': False}
+                with patch.object(fleet, 'run', side_effect=child):
+                    result = fleet.reconcile(inventory, state, apply=True, source=root, enroll=True)
+                self.assertEqual(result['hosts'][0]['status'], 'queued')
+                self.assertEqual(result['hosts'][0]['custodyKnown'], observed_exit == 1)
+                operations = json.loads((state / 'fleet-inflight.json').read_text())['operations']
+                self.assertEqual('workstation' in operations, observed_exit != 1)
+
+    def test_disconnect_preserves_fence_and_existing_writer_blocks_new_observer(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder); state = root / 'state'; inventory = root / 'fleet.json'
+            atomic_json(inventory, {'version': 1, 'hosts': [{'alias': 'workstation', 'os': 'linux'}]})
+            with fleet.writer(state / 'fleet-operations'), patch.object(fleet, 'run') as child:
+                with self.assertRaisesRegex(GuardError, 'writer-busy'):
+                    fleet.reconcile(inventory, state, apply=True)
+                child.assert_not_called()
+            with patch.object(fleet, 'run', side_effect=[{'exit': 0, 'output': 'modelhub-kit-probe-v1\nlinux\nfixture\nboot-a\n'}, OSError('fixture disconnect')]):
+                fleet.reconcile(inventory, state, apply=True)
+            self.assertIn('workstation', json.loads((state / 'fleet-inflight.json').read_text())['operations'])
+
     def fixture(self, root, extra=''):
         (root / 'scripts').mkdir()
         (root / 'modelhub_kit').mkdir()
@@ -87,7 +182,7 @@ class FleetDeliveryTests(unittest.TestCase):
             source.mkdir(); home.mkdir()
             payload, metadata = self.fixture(source)
             observed = identity()
-            command = fleet._unix_delivery(observed['os'], observed['boot'], metadata, False, False)
+            command = fleet._unix_delivery(observed['os'], observed['boot'], metadata, False, False, 'a' * 32)
             child = subprocess.Popen(shlex.split(command), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, env=dict(os.environ, HOME=str(home)))
             try:
@@ -97,6 +192,9 @@ class FleetDeliveryTests(unittest.TestCase):
                 output, errors = child.stdout.read(), child.stderr.read()
                 self.assertEqual(child.returncode, 0, errors.decode())
                 self.assertEqual(json.loads(output)['status'], 'installed-or-current')
+                self.assertEqual(json.loads(output)['operationId'], 'a' * 32)
+                self.assertTrue(json.loads(output)['operationTerminal'])
+                self.assertEqual(json.loads(output)['exitCode'], 0)
             finally:
                 if child.poll() is None:
                     child.kill(); child.wait()
@@ -197,11 +295,11 @@ class FleetDeliveryTests(unittest.TestCase):
             cases = [{}, {'modelCalls': 0}, dict(legacy, tools=[{'status': 'queued-active-or-unknown-processes'}]),
                      dict(legacy, catalogs=[{'status': 'refresh-failed-last-good-retained'}]),
                      dict(legacy, status='completed', cache={'status': 'queued-active-or-unknown-runtime'})]
-            for response in cases:
+            for index, response in enumerate(cases):
                 with self.subTest(response=response), patch.object(fleet, 'run', side_effect=[
                     {'exit': 0, 'output': 'modelhub-kit-probe-v1\nlinux\narch\nboot-a\n'},
                     {'exit': 0, 'output': json.dumps(response)}]):
-                    result = fleet.reconcile(inventory, root / 'state', apply=True)
+                    result = fleet.reconcile(inventory, root / ('state-' + str(index)), apply=True)
                 self.assertEqual(result['hosts'][0]['status'], 'queued')
                 self.assertEqual(result['hosts'][0]['reason'], 'maintenance-incomplete')
 
@@ -221,10 +319,13 @@ class FleetDeliveryTests(unittest.TestCase):
     def test_windows_command_is_finite_encoded_and_checks_boot_before_first_write(self):
         with tempfile.TemporaryDirectory() as directory:
             payload, metadata = self.fixture(pathlib.Path(directory))
-            command, prefix = fleet._windows_delivery('windows', 'boot-a', metadata, True, True)
+            command, prefix = fleet._windows_delivery('windows', 'boot-a', metadata, True, True, 'a' * 32)
             self.assertLess(len(command), 7500)
             loader = base64.b64decode(command.split()[-1]).decode('utf-16le')
             script = gzip.decompress(prefix).decode('utf-8')
+            self.assertIn("$operationId='" + 'a' * 32 + "'", script)
+            self.assertIn('operationTerminal=$cleanupOk', script)
+            self.assertIn('exitCode=$result', script)
             self.assertTrue(loader.startswith("$ProgressPreference='SilentlyContinue'"))
             self.assertIn('$modelhubWire.Read($zip,$offset', loader)
             self.assertNotIn('[Console]::OpenStandardInput()', loader)
@@ -291,12 +392,18 @@ class FleetDeliveryTests(unittest.TestCase):
             root = pathlib.Path(directory)
             inventory = root / 'fleet.json'
             atomic_json(inventory, {'version': 1, 'hosts': [{'alias': 'workstation', 'os': 'linux'}]})
-            responses = [{'exit': 0, 'timedOut': False, 'output': 'modelhub-kit-probe-v1\nlinux\narch\nboot-a\n'},
-                         {'exit': 0, 'timedOut': False, 'output': json.dumps({'version': 1, 'modelCalls': 0, 'startedAt': 'start', 'completedAt': 'end', 'tools': [], 'catalogs': [], 'cache': {'status': 'absent'}})}]
-            with patch.object(fleet, 'run', side_effect=responses) as execute:
+            def response(argv, **kwargs):
+                if '--operation-id' not in argv[-1]:
+                    return {'exit': 0, 'timedOut': False, 'output': 'modelhub-kit-probe-v1\nlinux\narch\nboot-a\n'}
+                operation = json.loads((root / 'state/fleet-inflight.json').read_text())['operations']['workstation']['id']
+                value = {'format': 'modelhub-kit-maintenance-v1', 'action': 'maintain', 'operationId': operation,
+                         'operationTerminal': True, 'status': 'completed', 'version': 1, 'modelCalls': 0,
+                         'startedAt': 'start', 'completedAt': 'end', 'tools': [], 'catalogs': [], 'integrations': [], 'cache': {'status': 'absent'}}
+                return {'exit': 0, 'timedOut': False, 'output': json.dumps(value)}
+            with patch.object(fleet, 'run', side_effect=response) as execute:
                 result = fleet.reconcile(inventory, root / 'state', apply=True)
             self.assertEqual(result['hosts'][0]['status'], 'completed')
-            self.assertIn('--expected-boot boot-a maintain', execute.call_args_list[1].args[0][-1])
+            self.assertIn('--expected-boot boot-a --operation-id ', execute.call_args_list[1].args[0][-1])
             self.assertNotIn('input_data', execute.call_args_list[1].kwargs)
 
 

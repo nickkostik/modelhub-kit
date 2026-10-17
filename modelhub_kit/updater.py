@@ -8,7 +8,7 @@ import sys
 import hashlib
 import platform
 import stat
-from .core import GuardError, atomic_json, atomic_text, http_json, locations, private_directory, protected, read_json, run
+from .core import GuardError, atomic_json, atomic_text, http_json, locations, private_directory, protected, read_json, run, run_mutation
 
 SEMVER = re.compile(r'\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?')
 
@@ -210,6 +210,8 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
         raise GuardError('unknown-tool')
     if install_missing and not selected:
         raise GuardError('install-missing-requires-explicit-tool-selection')
+    if repair and not selected:
+        raise GuardError('repair-requires-explicit-tool-selection')
     env = dict(os.environ, NPM_CONFIG_LOGS_MAX='0', NPM_CONFIG_AUDIT='false', NPM_CONFIG_FUND='false')
     # No API-key fallback for subscription tooling. User login files stay untouched.
     for key in ('XAI_API_KEY', 'GROK_API_KEY'):
@@ -265,7 +267,14 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
                     continue
                 env['MODELHUB_DISCOVERED_VERSION'] = target
                 args = [sys.executable, str(helper)]
-            result = run(args, env=env, timeout=310)
+            # These Darwin helpers stage and verify owned atomic artifacts;
+            # they never invoke an in-place vendor installer. Generic vendor
+            # mutations use kernel descendant custody on supported systems.
+            result = (run(args, env=env, timeout=310) if platform.system() == 'Darwin'
+                      else run_mutation(args, env=env, timeout=310))
+            if platform.system() != 'Darwin' and (result.get('treeComplete') is not True or result.get('observationFailed')):
+                results.append({'tool': name, 'status': 'queued', 'reason': 'vendor-mutation-custody-unknown'})
+                continue
             if result['exit'] != 0:
                 results.append({'tool': name, 'status': 'queued' if result['exit'] == 75 else 'update-failed', 'exit': result['exit']})
             else:
@@ -313,12 +322,9 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
             version_tuple(latest)
             if current and version_tuple(current) >= version_tuple(latest) and not repair:
                 if name == 'codex' and not healthy_codex(metadata, current, env):
-                    if version_tuple(current) > version_tuple(latest):
-                        results.append({'tool': name, 'status': 'repair-needed', 'reason': 'newer-native-platform-runtime-unavailable', 'installed': False})
-                        continue
-                    # Exact known broken latest installation: use the same
-                    # owned/idle/native-platform transaction below. Healthy
-                    # current versions never take this repair path again.
+                    results.append({'tool': name, 'status': 'repair-needed',
+                                    'reason': 'native-platform-runtime-unavailable', 'installed': False})
+                    continue
                 else:
                     results.append({'tool': name, 'status': 'current' if current == latest else 'newer-installation-preserved', 'version': current, 'installed': False})
                     continue
@@ -336,6 +342,9 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
             if processes is None or any(package_root in p.replace('\\', '/').lower() or package_name in p.replace('\\', '/').lower()
                                         or re.search(r'(?i)(?:^|[/\\\s])' + re.escape(definition['command']) + r'(?:[.\s/\\]|$)', p) for p in processes):
                 results.append({'tool': name, 'status': 'queued-active-or-unknown-processes'})
+                continue
+            if platform.system() == 'Darwin':
+                results.append({'tool': name, 'status': 'queued', 'reason': 'vendor-mutation-custody-unavailable', 'installed': False})
                 continue
             private_directory(target_prefix)
             cache = private_directory(pathlib.Path(state) / 'cache/npm')
@@ -355,7 +364,10 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
                           '--omit=dev', '--engine-strict', '--no-audit', '--no-fund', '--logs-max=0', '--cache', str(cache),
                           '--registry=https://registry.npmjs.org',
                           definition['package'] + '@' + latest]
-            result = run(args, env=env, timeout=300)
+            result = run_mutation(args, env=env, timeout=300)
+            if result.get('treeComplete') is not True or result.get('observationFailed'):
+                results.append({'tool': name, 'status': 'queued', 'reason': 'vendor-mutation-custody-unknown', 'installed': False})
+                continue
             after = json.loads(metadata.read_text()).get('version') if metadata.is_file() else None
             if result['exit'] == 0 and after == latest and name == 'codex' and not healthy_codex(metadata, latest, env):
                 results.append({'tool': name, 'status': 'update-failed', 'reason': 'native-platform-runtime-unavailable', 'installed': True})

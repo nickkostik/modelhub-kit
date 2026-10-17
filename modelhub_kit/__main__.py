@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import shutil
 import sys
 from . import __version__
@@ -12,6 +13,18 @@ SETTLED = frozenset({'completed', 'current', 'updated', 'installed', 'ready', 'n
                      'absent', 'within-budget', 'cleaned', 'applied', 'not-installed', 'missing',
                      'newer-installation-preserved', 'removed', 'no-configured-entries', 'no-configured-servers',
                      'no-configured-providers', 'no-configured-agents'})
+
+
+def _operation_context():
+    """Only bind the finite fleet maintenance command's validated identifier."""
+    arguments = sys.argv[1:]
+    if arguments.count('--operation-id') != 1 or 'maintain' not in arguments:
+        return {}
+    index = arguments.index('--operation-id')
+    if index + 1 >= len(arguments) or not re.fullmatch(r'[a-f0-9]{32}', arguments[index + 1]):
+        return {}
+    return {'format': 'modelhub-kit-terminal-v1', 'action': 'maintain',
+            'operationId': arguments[index + 1], 'operationTerminal': True}
 
 
 def completion(value):
@@ -64,6 +77,7 @@ def main():
     parser.add_argument('--config', type=pathlib.Path)
     parser.add_argument('--expected-os', help='Reject another OS/variant before writes, e.g. linux:arch')
     parser.add_argument('--expected-boot')
+    parser.add_argument('--operation-id', help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('init', help='Create empty personal configuration without overwriting existing settings')
     doctor = sub.add_parser('doctor', help='Read-only runtime, command and configuration discovery')
@@ -104,6 +118,8 @@ def main():
     uninstall.add_argument('--apply', action='store_true')
     uninstall.add_argument('--clean-state', action='store_true', help='Also remove only a marked kit maintenance receipt; retain all other state')
     args = parser.parse_args()
+    if args.operation_id and (args.command != 'maintain' or not re.fullmatch(r'[a-f0-9]{32}', args.operation_id)):
+        raise GuardError('invalid-maintenance-operation-id')
     home, file, state = locations()
     file = args.config or file
     observed = check_identity(args.expected_os, args.expected_boot)
@@ -177,6 +193,10 @@ def main():
             result['status'] = completion(result)
             result['completedAt'] = now()
             atomic_json(state / 'last-maintenance.json', result)
+            # Bind the remote observer's terminal receipt without extending
+            # the existing persisted maintenance/removal ownership schema.
+            if args.operation_id:
+                result.update(operationId=args.operation_id, operationTerminal=True, action='maintain')
             return result
 
 
@@ -194,10 +214,10 @@ def cli():
         readonly = isinstance(result, dict) and (result.get('readOnly') is True or result.get('apply') is False)
         sys.exit(1 if state == 'failed' else 75 if state == 'queued' and not (planned or readonly) else 0)
     except GuardError as error:
-        print(json.dumps({'status': 'queued' if str(error) == 'writer-busy' else 'refused', 'reason': str(error)}))
+        print(json.dumps({**_operation_context(), 'status': 'queued' if str(error) == 'writer-busy' else 'refused', 'reason': str(error)}))
         sys.exit(75 if str(error) == 'writer-busy' else 78)
     except (OSError, ValueError, KeyError, TypeError):
-        print(json.dumps({'status': 'error', 'reason': 'operation-failed-current-settings-retained'}))
+        print(json.dumps({**_operation_context(), 'status': 'error', 'reason': 'operation-failed-current-settings-retained'}))
         sys.exit(1)
 
 

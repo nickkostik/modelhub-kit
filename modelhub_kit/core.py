@@ -84,7 +84,25 @@ def read_json(path, default=None, limit=8 * 1024 * 1024):
 _UNSPECIFIED = object()
 
 
-def atomic_text(path, text, expected=_UNSPECIFIED):
+def _replace_file(temporary, path, durable=False):
+    if durable and os.name == 'nt':
+        import ctypes
+        move = ctypes.WinDLL('kernel32', use_last_error=True).MoveFileExW
+        move.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
+        move.restype = ctypes.c_int
+        if not move(str(temporary), str(path), 0x1 | 0x8):  # REPLACE_EXISTING | WRITE_THROUGH
+            raise GuardError('durable-file-publication-failed')
+    else:
+        os.replace(temporary, path)
+        if durable:
+            descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+
+
+def atomic_text(path, text, expected=_UNSPECIFIED, *, durable=False):
     path = pathlib.Path(path)
     private_directory(path.parent)
     before = None
@@ -110,14 +128,14 @@ def atomic_text(path, text, expected=_UNSPECIFIED):
             current = (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size)
         if current != before:
             raise GuardError('concurrent-file-change')
-        os.replace(temporary, path)
+        _replace_file(temporary, path, durable)
         return True
     finally:
         pathlib.Path(temporary).unlink(missing_ok=True)
 
 
-def atomic_json(path, value):
-    return atomic_text(path, json.dumps(value, indent=2, ensure_ascii=False) + '\n')
+def atomic_json(path, value, *, durable=False):
+    return atomic_text(path, json.dumps(value, indent=2, ensure_ascii=False) + '\n', durable=durable)
 
 
 @contextlib.contextmanager
@@ -149,7 +167,7 @@ def writer(state):
 
 class WindowsJob:
     """Own only the maintenance child tree, attached before its first instruction."""
-    def __init__(self):
+    def __init__(self, *, kill_on_close=True):
         import ctypes as c
         from ctypes import wintypes as w
         self.c, self.w = c, w
@@ -183,7 +201,7 @@ class WindowsJob:
             function.argtypes, function.restype = arguments, result
         self.handle = self.api.CreateJobObjectW(None, None)
         limits = Limits()
-        limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; no breakaway.
+        limits.basic.flags = 0x2000 if kill_on_close else 0  # No breakaway.
         if not self.handle or not self.api.SetInformationJobObject(self.handle, 9, c.byref(limits), c.sizeof(limits)):
             self.close()
             raise GuardError('maintenance-job-unavailable')
@@ -227,6 +245,18 @@ class WindowsJob:
                     return
                 time.sleep(0.05)
             raise GuardError('maintenance-child-tree-still-exiting')
+
+    def wait_empty(self):
+        """Follow a mutation's descendants naturally; never cancel the Job."""
+        counters = (self.c.c_ubyte * 48)()
+        while True:
+            if not self.api.QueryInformationJobObject(self.handle, 1, counters, 48, None):
+                # An unknown count is not terminal authority. Retain custody.
+                time.sleep(0.1)
+                continue
+            if int.from_bytes(bytes(counters)[40:44], 'little') == 0:
+                return
+            time.sleep(0.05)
 
     def close(self):
         if getattr(self, 'handle', None):
@@ -335,6 +365,12 @@ def run(argv, *, env=None, timeout=60, input_data=None):
             job.close()
         if not reader.is_alive():
             child.stdout.close()
+
+
+def run_mutation(argv, *, env=None, timeout=None):
+    """Follow vendor mutation custody; timeout is observation only."""
+    from .mutation import run
+    return run(argv, env=env, timeout=timeout)
 
 
 def identity():

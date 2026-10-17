@@ -26,6 +26,14 @@ installed versions are preserved. A failed native asset download must not
 replace the working executable. A live old executable can remain until it is
 safe to retire; it is an active runtime, not disposable cache.
 
+Version and metadata probes have finite deadlines. Supported Linux and Windows
+vendor mutations wait for their owned process trees to finish naturally;
+scheduler deadlines do not interrupt them. Generic macOS package-manager
+mutations queue when descendant custody is unavailable. The separate verified
+atomic application paths retain their own staging guards. A current Codex
+installation with a failed health check reports `repair-needed`; use an
+explicit `update --tool codex --repair` after reviewing the failure.
+
 Catalog sources are explicitly configured HTTPS sources. Capability metadata
 and reasoning choices come from those sources, with unknown capabilities kept
 unknown. A transport failure must not turn a last valid catalog into an empty

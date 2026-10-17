@@ -9,15 +9,15 @@ manage; an existing compatible Node installation is preserved.
 
 Use the [published releases](https://github.com/nickkostik/modelhub-kit/releases)
 to choose a reviewed version. For this release, either download and extract
-[the v0.2.2 source ZIP](https://github.com/nickkostik/modelhub-kit/archive/refs/tags/v0.2.2.zip)
+[the v0.2.3 source ZIP](https://github.com/nickkostik/modelhub-kit/archive/refs/tags/v0.2.3.zip)
 or use Git:
 
 ```sh
-git clone --branch v0.2.2 --depth 1 https://github.com/nickkostik/modelhub-kit.git modelhub-kit-v0.2.2
-cd modelhub-kit-v0.2.2
+git clone --branch v0.2.3 --depth 1 https://github.com/nickkostik/modelhub-kit.git modelhub-kit-v0.2.3
+cd modelhub-kit-v0.2.3
 ```
 
-The same Git commands work in PowerShell; use `Set-Location modelhub-kit-v0.2.2`
+The same Git commands work in PowerShell; use `Set-Location modelhub-kit-v0.2.3`
 if preferred. Git is optional when using a downloaded source archive. Inspect
 the source before running the installer below. Tags select a version; a version
 label alone is not an independent signature verification. The release contains
@@ -73,6 +73,12 @@ missing or older-than-22 Node runtime. It does not upgrade the operating system,
 replace a working Python, or upgrade an already compatible Node installation.
 Some native package operations require prior administrative authorization;
 unavailable authorization produces installation steps rather than a hidden prompt.
+
+On macOS, install Python 3.11+ yourself when it is missing; the wrapper reports
+`queued` and links to the official Python download instead of starting Homebrew.
+Generic macOS Node/npm package-manager mutations also queue. Linux and Windows
+bootstrap commands before Python is available wait for the direct package
+manager; full descendant custody applies to the Python-backed mutation runner.
 Some older distributions do not provide Python 3.11 in their supported
 repositories; use a supported interpreter rather than replacing system Python.
 The [Python documentation](https://docs.python.org/3/using/) covers official

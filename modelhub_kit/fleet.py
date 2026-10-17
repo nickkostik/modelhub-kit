@@ -11,7 +11,8 @@ import re
 import shlex
 import stat
 import tarfile
-from .core import GuardError, atomic_json, now, protected, read_json, run
+import uuid
+from .core import GuardError, atomic_json, now, protected, read_json, run, writer
 
 SSH_OPTIONS = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=8',
                '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=2']
@@ -156,7 +157,16 @@ def _directories(manifest):
                   key=lambda name: (-len(pathlib.PurePosixPath(name).parts), name))
 
 
-def _unix_delivery(expected, boot, metadata, prerequisites, schedule):
+def _delivery_context(operation_id):
+    if operation_id is None:
+        return {}
+    if not isinstance(operation_id, str) or not re.fullmatch(r'[a-f0-9]{32}', operation_id):
+        raise GuardError('invalid-fleet-operation-id')
+    return {'format': 'modelhub-kit-delivery-v1', 'action': 'deliver-and-enroll',
+            'operationId': operation_id, 'operationTerminal': True}
+
+
+def _unix_delivery(expected, boot, metadata, prerequisites, schedule, operation_id=None):
     files = metadata['files']
     verify = '\n'.join('[ "$(hash_file "$stage/' + name + '")" = ' + item['sha256'] + ' ] || fail delivery-hash-mismatch'
                        for name, item in files.items())
@@ -176,6 +186,10 @@ if [ -e "$stage/payload.tar" ] || [ -L "$stage/payload.tar" ]; then
 fi
 ''' + '\n'.join('rmdir "$stage/' + directory + '" 2>/dev/null || cleanup_ok=0' for directory in _directories(files))
     options = (' --prerequisites' if prerequisites else '') + (' --schedule' if schedule else '')
+    context = _delivery_context(operation_id)
+    success = shlex.quote(json.dumps(dict(context, status='installed-or-current', cleanupComplete=True, exitCode=0)))
+    busy = shlex.quote(json.dumps(dict(context, status='queued', reason='writer-busy', cleanupComplete=True, exitCode=75)))
+    deferred = shlex.quote(json.dumps(dict(context, status='queued', reason='installer-deferred', cleanupComplete=True, exitCode=75)))
     return _shell('set -eu\n' + _guard_unix(expected, boot) + r'''
 fail() { printf '{"status":"queued","reason":"%s"}\n' "$1"; exit 75; }
 hash_file() {
@@ -234,8 +248,9 @@ done
         'safe_stage || fail unsafe-delivery-directory\ntar -xf "$stage/payload.tar" -C "$stage"\nsafe_stage || fail unsafe-delivery-directory\n' + verify + '\n' + _guard_unix(expected, boot) +
         'set +e\nsh "$stage/scripts/install.sh" --source "$stage"' + options + ' </dev/null >/dev/null 2>&1\nresult=$?\nset -e\n' +
         'cleanup\ntrap - EXIT\n[ "$cleanup_ok" = 1 ] || fail delivery-cleanup-incomplete\n' +
-        'if [ "$result" = 0 ]; then printf \'{"status":"installed-or-current","cleanupComplete":true}\\n\'; '
-        'elif [ "$result" = 75 ]; then fail writer-busy; else fail installer-deferred; fi\n')
+        'if [ "$result" = 0 ]; then printf \'%s\\n\' ' + success + '; '
+        'elif [ "$result" = 75 ]; then printf \'%s\\n\' ' + busy + '; exit 75; '
+        'else printf \'%s\\n\' ' + deferred + '; exit 75; fi\n')
 
 
 def _windows_loader(script, boot, archive_size=0, archive_sha256=None):
@@ -273,13 +288,15 @@ def _windows_loader(script, boot, archive_size=0, archive_sha256=None):
     return command, prefix
 
 
-def _windows_delivery(expected, boot, metadata, prerequisites, schedule):
+def _windows_delivery(expected, boot, metadata, prerequisites, schedule, operation_id=None):
     quote = lambda value: "'" + value.replace("'", "''") + "'"
     encoded = base64.b64encode(json.dumps(metadata['files'], separators=(',', ':')).encode()).decode()
     directories = base64.b64encode(json.dumps(_directories(metadata['files'])).encode()).decode()
     options = (' -Prerequisites' if prerequisites else '') + (' -Schedule' if schedule else '')
+    context = _delivery_context(operation_id)
+    binding = ('$operationId=' + quote(context['operationId']) + '\n') if context else '$operationId=$null\n'
     script = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)\n" +
-        _WINDOWS_IDENTITY + "if($actualBoot -ne " + quote(boot) + "){throw 'different-boot-identity'}\n" +
+        _WINDOWS_IDENTITY + "if($actualBoot -ne " + quote(boot) + "){throw 'different-boot-identity'}\n" + binding +
         "$manifest=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + encoded + "'))|ConvertFrom-Json\n" +
         "$directories=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + directories + "'))|ConvertFrom-Json\n" + r'''
 Add-Type -TypeDefinition @'
@@ -368,7 +385,7 @@ try {
  }catch{$cleanupOk=$false}}
 }
 if(-not $cleanupOk){$result=75;$reason='delivery-cleanup-incomplete'}
-@{status=$(if($result -eq 0){'installed-or-current'}else{'queued'});reason=$reason;cleanupComplete=$cleanupOk}|ConvertTo-Json -Compress
+@{format='modelhub-kit-delivery-v1';action='deliver-and-enroll';operationId=$operationId;operationTerminal=$cleanupOk;status=$(if($result -eq 0){'installed-or-current'}else{'queued'});reason=$reason;cleanupComplete=$cleanupOk;exitCode=$result}|ConvertTo-Json -Compress
 exit $result
 ''')
     return _windows_loader(script, boot, metadata['size'], metadata['sha256'])
@@ -404,7 +421,47 @@ def _maintenance_complete(response):
             and isinstance(response.get('cache'), dict) and response['cache'].get('status') in accepted)
 
 
+def _terminal_observed(response, operation_id, enroll, exit_code):
+    """An exact completed observation may be queued; success is independent."""
+    if (type(exit_code) is not int or not isinstance(response, dict) or response.get('operationId') != operation_id
+            or response.get('operationTerminal') is not True):
+        return False
+    status = response.get('status')
+    if not isinstance(status, str):
+        return False
+    if enroll:
+        return (response.get('format') == 'modelhub-kit-delivery-v1'
+                and response.get('action') == 'deliver-and-enroll'
+                and response.get('cleanupComplete') is True
+                and type(response.get('exitCode')) is int and response['exitCode'] == exit_code
+                and ((status == 'installed-or-current' and exit_code == 0)
+                     or (status == 'queued' and exit_code != 0)))
+    if response.get('action') != 'maintain':
+        return False
+    if response.get('format') == 'modelhub-kit-terminal-v1':
+        return exit_code == {'queued': 75, 'refused': 78, 'error': 1}.get(status)
+    return (response.get('format') == 'modelhub-kit-maintenance-v1' and type(response.get('version')) is int and response['version'] == 1
+            and type(response.get('modelCalls')) is int and response['modelCalls'] == 0
+            and all(isinstance(response.get(key), str) and bool(response[key]) for key in ('startedAt', 'completedAt'))
+            and all(isinstance(response.get(key), list)
+                    and all(isinstance(item, dict) and isinstance(item.get('status'), str) for item in response[key])
+                    for key in ('tools', 'catalogs', 'integrations'))
+            and isinstance(response.get('cache'), dict) and isinstance(response['cache'].get('status'), str)
+            and exit_code == {'completed': 0, 'queued': 75, 'failed': 1}.get(status))
+
+
 def reconcile(inventory, state, apply=False, *, source=None, enroll=False, prerequisites=False, schedule=False):
+    # Separate from the caller's maintenance lock; direct API users serialize
+    # the same durable operation fence as the CLI. Children inherit no lock FD.
+    if apply:
+        with writer(pathlib.Path(state) / 'fleet-operations'):
+            return _reconcile(inventory, state, apply, source=source, enroll=enroll,
+                              prerequisites=prerequisites, schedule=schedule)
+    return _reconcile(inventory, state, apply, source=source, enroll=enroll,
+                      prerequisites=prerequisites, schedule=schedule)
+
+
+def _reconcile(inventory, state, apply=False, *, source=None, enroll=False, prerequisites=False, schedule=False):
     document = read_json(inventory)
     if not isinstance(document, dict) or document.get('version') != 1 or not isinstance(document.get('hosts'), list):
         raise GuardError('version1-fleet-inventory-required')
@@ -427,12 +484,21 @@ def reconcile(inventory, state, apply=False, *, source=None, enroll=False, prere
         hosts.append((name, expected, boot))
     if len(hosts) > 256:
         raise GuardError('fleet-host-budget')
+    fence_path = pathlib.Path(state) / 'fleet-inflight.json'
+    fence = read_json(fence_path, {'version': 1, 'operations': {}}) if apply else None
+    if apply and (not isinstance(fence, dict) or fence.get('version') != 1
+                  or not isinstance(fence.get('operations'), dict)):
+        raise GuardError('fleet-inflight-state-unavailable')
     outcomes = []
     for name, expected, boot in hosts:
         if not apply:
             outcomes.append({'host': name, 'status': 'planned', 'expectedOs': expected,
                              'action': 'deliver-and-enroll' if enroll else 'maintain',
                              'prerequisitesAllowed': prerequisites, 'scheduleRequested': schedule})
+            continue
+        if name in fence['operations']:
+            outcomes.append({'host': name, 'status': 'queued', 'reason': 'remote-operation-inflight',
+                             'custodyKnown': False})
             continue
         try:
             observed = _ssh(name, _probe_command(expected), timeout=30)
@@ -448,26 +514,38 @@ def reconcile(inventory, state, apply=False, *, source=None, enroll=False, prere
                 outcomes.append({'host': name, 'status': 'queued', 'reason': mismatch})
                 continue
             # Always bind this actual observed boot, including inventories without a fixed boot.
+            operation_id = uuid.uuid4().hex
             wire_payload = payload
             if enroll:
                 if expected == 'windows':
-                    remote, prefix = _windows_delivery(expected, identity['boot'], metadata, prerequisites, schedule)
+                    remote, prefix = _windows_delivery(expected, identity['boot'], metadata, prerequisites, schedule, operation_id)
                     wire_payload = prefix + payload
                 else:
-                    remote = _unix_delivery(expected, identity['boot'], metadata, prerequisites, schedule)
+                    remote = _unix_delivery(expected, identity['boot'], metadata, prerequisites, schedule, operation_id)
             else:
-                argv = ['--expected-os', expected, '--expected-boot', identity['boot'], 'maintain']
+                argv = ['--expected-os', expected, '--expected-boot', identity['boot'], '--operation-id', operation_id, 'maintain']
                 if expected == 'windows':
                     remote = _powershell("$p=Join-Path $env:LOCALAPPDATA 'modelhub-kit/bin/modelhub-kit.cmd'; & $p " +
                                          ' '.join("'" + argument + "'" for argument in argv) + '; exit $LASTEXITCODE')
                 else:
                     remote = 'exec "$HOME/.local/bin/modelhub-kit" ' + shlex.join(argv)
+            # Persist before the first mutating byte. Losing SSH observation
+            # cannot authorize another installation or prove remote custody.
+            fence['operations'][name] = {'id': operation_id, 'startedAt': now(),
+                'action': 'deliver-and-enroll' if enroll else 'maintain',
+                'os': identity['os'], 'boot': identity['boot']}
+            atomic_json(fence_path, fence, durable=True)
             value = _ssh(name, remote, timeout=900 if prerequisites else 600, payload=wire_payload)
             response = _json_response(value['output'])
             delivered = wire_payload is None or value.get('inputSent') == len(wire_payload) and value.get('inputFailed') is False
-            complete = (value['exit'] == 0 and not value.get('timedOut') and delivered and isinstance(response, dict)
+            terminal = (not value.get('timedOut') and delivered
+                        and _terminal_observed(response, operation_id, enroll, value['exit']))
+            complete = (terminal and value['exit'] == 0 and isinstance(response, dict)
                         and (response.get('status') == 'installed-or-current' and response.get('cleanupComplete') is True if enroll
                              else _maintenance_complete(response)))
+            if terminal:
+                del fence['operations'][name]
+                atomic_json(fence_path, fence, durable=True)
             reason = response.get('reason') if isinstance(response, dict) else None
             if not delivered:
                 reason = 'delivery-input-incomplete'
@@ -478,7 +556,8 @@ def reconcile(inventory, state, apply=False, *, source=None, enroll=False, prere
                        'sha256-unavailable', 'unsafe-delivery-directory', 'installer-deferred', 'delivery-unavailable', 'delivery-extraction-failed')
             outcomes.append({'host': name, 'status': 'completed' if complete else 'queued', 'action': 'deliver-and-enroll' if enroll else 'maintain',
                              'exit': value['exit'], 'timedOut': value.get('timedOut', False),
-                             'reason': reason if reason in reasons else ('different-boot-identity' if value['exit'] == 78 else None)})
+                             'reason': reason if reason in reasons else ('different-boot-identity' if value['exit'] == 78 else None),
+                             'custodyKnown': terminal})
         except GuardError as error:
             outcomes.append({'host': name, 'status': 'queued', 'reason': str(error)})
         except OSError:

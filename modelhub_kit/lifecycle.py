@@ -20,7 +20,7 @@ MAINTENANCE_MARKER = 'modelhub-kit-maintenance-v1'
 # Fixed application surface, including optional documentation and old releases.
 # A receipt cannot grant permission to remove arbitrary names beneath the app.
 APPLICATION_FILES = frozenset({
-    'modelhub_kit/__init__.py', 'modelhub_kit/__main__.py', 'modelhub_kit/core.py',
+    'modelhub_kit/__init__.py', 'modelhub_kit/__main__.py', 'modelhub_kit/core.py', 'modelhub_kit/mutation.py',
     'modelhub_kit/updater.py', 'modelhub_kit/catalog.py', 'modelhub_kit/integration.py',
     'modelhub_kit/projection.py', 'modelhub_kit/acp.py', 'modelhub_kit/lifecycle.py',
     'modelhub_kit/cache.py', 'modelhub_kit/fleet.py', 'modelhub_kit/schedule.py', 'modelhub_kit/tools.json',

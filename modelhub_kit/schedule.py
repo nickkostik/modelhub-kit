@@ -133,7 +133,7 @@ def _linux(command: list[str], state: Path) -> dict:
                "\nWorkingDirectory=" + _systemd_quote(workdir) +
                "\nEnvironment=" + _systemd_quote("MODELHUB_KIT_HOME=" + str(state)) +
                "\nNice=10\nIOSchedulingClass=idle\nCPUQuota=100%\nMemoryHigh=2G\n"
-               "TimeoutStartSec=30min\nStandardOutput=null\nStandardError=null\n")
+               "TimeoutStartSec=infinity\nStandardOutput=null\nStandardError=null\n")
     cadence = ("[Unit]\nDescription=ModelHub Kit daily maintenance schedule\n\n[Timer]\n# " + MARKER +
                "\nOnCalendar=daily\nPersistent=true\nRandomizedDelaySec=30min\nUnit=" + unit.name +
                "\n\n[Install]\nWantedBy=timers.target\n")
@@ -172,7 +172,7 @@ def _windows(command: list[str], state: Path) -> dict:
     vbs = ("' " + MARKER + '\r\nSet shell = CreateObject("WScript.Shell")\r\n' +
            'shell.CurrentDirectory = "' + workdir.replace('"', '""') + '"\r\n' +
            'shell.Environment("Process")("MODELHUB_KIT_HOME") = "' + str(state).replace('"', '""') + '"\r\n' +
-           'shell.Run "' + quoted + '", 0, False\r\n')
+           'shell.Run "' + quoted + '", 0, True\r\n')
     name = "ModelHubKit-" + _hash(str(state).casefold().encode())[:12]
     return dict(kind="windows-user-task", name=name, files={launcher: vbs.encode("utf-16")}, primary=launcher)
 
@@ -280,7 +280,7 @@ def _windows_xml(plan: dict) -> bytes:
     add(principal, "RunLevel", "LeastPrivilege")
     settings = add(task, "Settings")
     for key, value in [("MultipleInstancesPolicy", "IgnoreNew"), ("StartWhenAvailable", "true"),
-                       ("Enabled", "true"), ("Hidden", "true"), ("ExecutionTimeLimit", "PT30M")]:
+                       ("Enabled", "true"), ("Hidden", "true"), ("ExecutionTimeLimit", "PT0S")]:
         add(settings, key, value)
     action = add(add(task, "Actions", Context="CurrentUser"), "Exec")
     add(action, "Command", str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/wscript.exe"))
