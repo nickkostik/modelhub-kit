@@ -172,7 +172,7 @@ def _windows(command: list[str], state: Path) -> dict:
     vbs = ("' " + MARKER + '\r\nSet shell = CreateObject("WScript.Shell")\r\n' +
            'shell.CurrentDirectory = "' + workdir.replace('"', '""') + '"\r\n' +
            'shell.Environment("Process")("MODELHUB_KIT_HOME") = "' + str(state).replace('"', '""') + '"\r\n' +
-           'shell.Run "' + quoted + '", 0, True\r\n')
+           'exitCode = shell.Run("' + quoted + '", 0, True)\r\nWScript.Quit exitCode\r\n')
     name = "ModelHubKit-" + _hash(str(state).casefold().encode())[:12]
     return dict(kind="windows-user-task", name=name, files={launcher: vbs.encode("utf-16")}, primary=launcher)
 

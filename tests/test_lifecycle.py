@@ -61,6 +61,7 @@ class LifecycleTests(unittest.TestCase):
                 self.assertIn(value, text)
             windows = schedule._windows(['python.exe', '-m', 'modelhub_kit', 'maintain'], state)
             self.assertIn(', 0, True', windows['files'][windows['primary']].decode('utf-16'))
+            self.assertIn('WScript.Quit exitCode', windows['files'][windows['primary']].decode('utf-16'))
             with patch.object(schedule, '_run', return_value=subprocess.CompletedProcess([], 0, b'"User","S-1-5-21-123"\n', b'')):
                 payload = schedule._windows_xml(windows)
             self.assertIn('PT0S', payload.decode('utf-16'))
