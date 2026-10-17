@@ -133,3 +133,23 @@ failure with its sanitized status and the operation that produced it; do not
 attach credentials, raw environments, account databases, or personal logs.
 
 The installer uses the same per-user writer lock as maintenance. A busy writer queues installation with exit code 75; retry when that maintenance run finishes. Existing files are checked again against their original content and filesystem identity immediately before replacement or removal. Concurrent custom changes are preserved. An unavailable Windows Task Scheduler query never counts as proof that a task is absent.
+
+
+## Kit upgrades and removal
+
+Tool maintenance does not update ModelHub Kit itself. Select and review a
+published source release, then rerun that release's installer. Identical
+installations are a no-op; a changed installation defers while another kit
+reader/writer is active or cannot be inspected. The kit has no self-update
+daemon. See [release selection and upgrades](INSTALL.md#upgrade-the-kit-itself).
+
+`modelhub-kit uninstall` plans receipt-bound removal;
+`modelhub-kit uninstall --apply` removes the idle owned schedule, launcher and
+checked application files. It preserves personal configuration, installed tools,
+native integrations and state. Modified/unknown code or jobs queue; they are
+never forcibly removed. Use the same state environment as the owned schedule,
+and remove schedules for any additional state directories before uninstalling.
+`--clean-state` is a separate opt-in limited to the explicitly marked current
+maintenance receipt; it never purges the state directory or a vendor cache.
+[Complete removal instructions](INSTALL.md#remove-modelhub-kit) include older
+installations, Windows and recovery after an interrupted operation.

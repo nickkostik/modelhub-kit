@@ -19,7 +19,7 @@ import tempfile
 FILES = (
     "modelhub_kit/__init__.py", "modelhub_kit/__main__.py", "modelhub_kit/core.py",
     "modelhub_kit/updater.py", "modelhub_kit/catalog.py", "modelhub_kit/integration.py",
-    "modelhub_kit/projection.py", "modelhub_kit/acp.py",
+    "modelhub_kit/projection.py", "modelhub_kit/acp.py", "modelhub_kit/lifecycle.py",
     "modelhub_kit/cache.py", "modelhub_kit/fleet.py", "modelhub_kit/schedule.py", "modelhub_kit/tools.json",
     "modelhub_kit/native_helpers/__init__.py", "modelhub_kit/native_helpers/omp.py",
     "modelhub_kit/native_helpers/droid.py", "modelhub_kit/native_helpers/products.py",
@@ -93,6 +93,28 @@ def unchanged(path: Path, expected):
         raise ValueError("A concurrently changed installation file was preserved")
 
 
+def _check_install_directory(path: Path):
+    from modelhub_kit.core import GuardError
+    info = path.lstat()
+    if (path.is_symlink() or path.resolve() != path.absolute() or not path.is_dir()
+            or hasattr(os, "getuid") and (info.st_uid != os.getuid() or info.st_mode & 0o022)):
+        raise GuardError("unsafe-installation-directory-preserved")
+
+
+def _private_install_directory(path: Path):
+    # mkdir(parents=True, mode=0700) does not apply that mode to intermediates.
+    # Validate the existing ancestor, then create/check each missing component.
+    missing = []
+    ancestor = path
+    while not ancestor.exists() and not ancestor.is_symlink():
+        missing.append(ancestor)
+        ancestor = ancestor.parent
+    _check_install_directory(ancestor)
+    for directory in reversed(missing):
+        directory.mkdir(mode=0o700)
+        _check_install_directory(directory)
+
+
 def atomic_write(path: Path, data: bytes, mode: int = 0o600, *, expected=_UNSPECIFIED) -> bool:
     if expected is _UNSPECIFIED:
         expected = snapshot(path)
@@ -108,7 +130,7 @@ def atomic_write(path: Path, data: bytes, mode: int = 0o600, *, expected=_UNSPEC
                 os.fchmod(stream.fileno(), mode)
             return True
         return False
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _private_install_directory(path.parent)
     if path.parent.is_symlink() or path.parent.resolve() != path.parent.absolute():
         raise ValueError("A symlinked installation directory was preserved")
     info = path.parent.stat()
@@ -140,11 +162,17 @@ def remove_owned(path: Path, expected) -> bool:
     return True
 
 
+def _quiet_child_options() -> dict:
+    """Hide our own Windows helper children; Unix process behavior is unchanged."""
+    return {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+
+
 def _node_version(executable: str | None) -> str | None:
     version = None
     if executable:
         try:
-            value = subprocess.check_output([executable, "--version"], timeout=5, stderr=subprocess.DEVNULL).decode().strip()
+            value = subprocess.check_output([executable, "--version"], timeout=5, stdin=subprocess.DEVNULL,
+                                              stderr=subprocess.DEVNULL, **_quiet_child_options()).decode().strip()
             if re.fullmatch(r"v\d+\.\d+\.\d+", value):
                 version = value[1:]
         except (OSError, subprocess.SubprocessError):
@@ -189,7 +217,7 @@ def node_prerequisite(allow_install: bool = False) -> dict:
             if not found or int(found.group(1)) < 22:
                 result["note"] = "The configured repository does not advertise Node 22+. Use an official Node LTS download; no older Node package was installed."
                 return result
-        options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+        options = _quiet_child_options()
         operation = subprocess.run(manager, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL, timeout=600,
                                    env=dict(os.environ, HOMEBREW_NO_AUTO_UPDATE="1"), **options)
@@ -222,6 +250,9 @@ def _install_files(source: Path, schedule: bool = False, dry_run: bool = False, 
             if os.name == "nt" else home / ".local/share/modelhub-kit")
     app = base / "app"
     command = (base / "bin/modelhub-kit.cmd" if os.name == "nt" else home / ".local/bin/modelhub-kit")
+    for directory in (app, app.parent, command.parent):
+        if directory.exists() or directory.is_symlink():
+            _check_install_directory(directory)
     receipt_file = app / ".modelhub-kit-install.json"
     bodies = {}
     for relative in FILES + OPTIONAL_FILES:
@@ -278,6 +309,15 @@ def _install_files(source: Path, schedule: bool = False, dry_run: bool = False, 
             if originals[target] is not None and digest(originals[target][0]) != expected:
                 raise ValueError("A modified retired application file was preserved")
             obsolete.append(target)
+    # Inspect every existing target parent (or nearest existing ancestor) before
+    # any application write. Nested shared-writable folders must not fail only
+    # after an earlier module was already replaced. This also stays read-only
+    # for dry-run and never adopts/chmods an unsafe partial installation.
+    for target in [receipt_file, command, *[app / relative for relative in bodies], *obsolete]:
+        ancestor = target.parent
+        while not ancestor.exists() and not ancestor.is_symlink():
+            ancestor = ancestor.parent
+        _check_install_directory(ancestor)
     result = {"status": "planned" if dry_run else "current", "application": str(app), "command": str(command),
               "python": platform.python_version(), "node": node, "filesChanged": 0,
               "scheduleRequested": schedule, "backupsCreated": 0}
@@ -289,17 +329,35 @@ def _install_files(source: Path, schedule: bool = False, dry_run: bool = False, 
         result["node"] = node
         node_bin = str(Path(node["executable"]).parent) if node.get("ready") else None
         bodies["launch.py"] = LAUNCH.replace("__NODE_BIN__", repr(node_bin)).encode()
+    changing = (any(originals[app / relative] is None or originals[app / relative][0] != data
+                    for relative, data in bodies.items())
+                or originals[command] is None or originals[command][0] != launcher
+                or any(originals[path] is not None for path in obsolete))
+    if previous and changing:
+        from modelhub_kit.lifecycle import _idle
+        if not _idle(app, command):
+            from modelhub_kit.core import GuardError
+            raise GuardError('active-or-unknown-kit-runtime')
     for path, expected in originals.items():
         unchanged(path, expected)
-    for relative, data in bodies.items():
-        target = app / relative
-        result["filesChanged"] += atomic_write(target, data, expected=originals[target])
-    for target in obsolete:
-        result["filesChanged"] += remove_owned(target, originals[target])
-    result["filesChanged"] += atomic_write(command, launcher, 0o755, expected=originals[command])
-    receipt = {"marker": MARKER, "files": {name: digest(data) for name, data in bodies.items()},
-               "launcherSha256": digest(launcher)}
-    atomic_write(receipt_file, (json.dumps(receipt, indent=2) + "\n").encode(), expected=originals[receipt_file])
+    from modelhub_kit.core import GuardError
+    try:
+        for relative, data in bodies.items():
+            target = app / relative
+            result["filesChanged"] += atomic_write(target, data, expected=originals[target])
+        for target in obsolete:
+            result["filesChanged"] += remove_owned(target, originals[target])
+        result["filesChanged"] += atomic_write(command, launcher, 0o755, expected=originals[command])
+        receipt = {"marker": MARKER, "files": {name: digest(data) for name, data in bodies.items()},
+                   "launcherSha256": digest(launcher)}
+        atomic_write(receipt_file, (json.dumps(receipt, indent=2) + "\n").encode(), expected=originals[receipt_file])
+    except GuardError as error:
+        if str(error) != "unsafe-installation-directory-preserved":
+            raise
+        # A concurrent directory change can still follow the full preflight.
+        # Keep the real count; do not initialize/relaunch a partial candidate.
+        result.update(status="queued", reason=str(error))
+        return result
     result["status"] = "installed" if result["filesChanged"] else "current"
     return result
 
@@ -313,22 +371,24 @@ def install(source: Path, schedule: bool = False, dry_run: bool = False, prerequ
         with contextlib.nullcontext() if dry_run else writer(locations()[2]):
             result = _install_files(source, schedule, dry_run, prerequisites)
     except GuardError as error:
-        if str(error) == "writer-busy":
-            return {"status": "queued", "reason": "writer-busy", "filesChanged": 0, "backupsCreated": 0}
+        if str(error) in {"writer-busy", "active-or-unknown-kit-runtime", "unsafe-installation-directory-preserved"}:
+            return {"status": "queued", "reason": str(error), "filesChanged": 0, "backupsCreated": 0}
         raise ValueError("The shared maintenance state was preserved") from error
-    if dry_run:
+    if dry_run or result.get("status") == "queued":
         return result
     app = Path(result["application"])
     python = str(Path(sys.executable).absolute())
     initialized = subprocess.run([python, "-B", str(app / "launch.py"), "init"],
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 timeout=30, **_quiet_child_options())
     result["initExit"] = initialized.returncode
     if initialized.returncode:
         result["status"] = "configuration-not-initialized"
         return result
     if schedule:
         completed = subprocess.run([python, "-B", str(app / "launch.py"), "schedule", "--apply"],
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   timeout=60, **_quiet_child_options())
         result["scheduleExit"] = completed.returncode
         try:
             scheduled = json.loads(completed.stdout)

@@ -16,7 +16,7 @@ Windows PowerShell:
 & .\scripts\install.ps1
 ```
 
-The installer creates a per-user command and initializes an empty personal configuration outside the checkout. It preserves existing configuration and compatible runtimes. Use `--prerequisites` on Unix or `-Prerequisites` on Windows to explicitly install missing prerequisites through a supported native package manager. Node 22+ is needed for npm tools; unsupported package-manager versions produce an actionable result. [Installation instructions](docs/INSTALL.md) cover paths, prerequisites, PATH setup, initialization, and optional scheduling.
+The installer creates a per-user command and initializes an empty personal configuration outside the checkout. It preserves existing configuration and compatible runtimes. Use `--prerequisites` on Unix or `-Prerequisites` on Windows to explicitly install missing prerequisites through a supported native package manager. Node 22+ is needed for npm tools; unsupported package-manager versions produce an actionable result. [Installation instructions](docs/INSTALL.md) cover release selection, paths, prerequisites, PATH setup, initialization, optional scheduling, kit upgrades and removal.
 
 ```sh
 modelhub-kit doctor --json
@@ -71,6 +71,8 @@ modelhub-kit fleet --inventory /path/to/your-inventory.json --source /path/to/re
 ```
 
 [Fleet installation](docs/FLEET.md) explains optional prerequisite installation and scheduling. Source delivery includes only the reviewed application allowlist; it excludes local configuration, state and repository history.
+
+To upgrade ModelHub Kit itself, review a newer published source release and rerun its installer; `update` manages selected tools. `modelhub-kit uninstall` plans removal, and `uninstall --apply` removes only the idle receipt-owned kit application/launcher/schedule. Configuration, vendor tools and native integrations stay in place. [Upgrade and removal instructions](docs/INSTALL.md#upgrade-the-kit-itself) include Windows and the narrow optional receipt cleanup.
 
 [Operations](docs/OPERATIONS.md) explains background behavior, preservation, repairs and queued work. [Agent instructions](AGENTS.md) define the same rules for contributors and automated agents.
 

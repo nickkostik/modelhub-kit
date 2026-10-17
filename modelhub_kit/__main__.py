@@ -100,6 +100,9 @@ def main():
     schedule = sub.add_parser('schedule', help='Plan or apply owned background maintenance scheduling')
     schedule.add_argument('--apply', action='store_true')
     schedule.add_argument('--remove', action='store_true')
+    uninstall = sub.add_parser('uninstall', help='Plan or remove only the idle receipt-owned kit application and schedule')
+    uninstall.add_argument('--apply', action='store_true')
+    uninstall.add_argument('--clean-state', action='store_true', help='Also remove only a marked kit maintenance receipt; retain all other state')
     args = parser.parse_args()
     home, file, state = locations()
     file = args.config or file
@@ -108,6 +111,9 @@ def main():
         with writer(state):
             changed = False if file.exists() else atomic_json(file, default_config())
         return {'status': 'initialized' if changed else 'existing-config-preserved', 'changed': changed}
+    if args.command == 'uninstall':
+        from .lifecycle import uninstall
+        return uninstall(home, file, state, apply=args.apply, clean_state=args.clean_state)
     settings = config(file)
     if args.command == 'doctor':
         from .updater import tools, describe
@@ -164,7 +170,7 @@ def main():
             from .updater import update
             from .catalog import sync
             from .cache import enforce
-            result = {'version': 1, 'startedAt': now(), 'tools': update(settings, state),
+            result = {'format': 'modelhub-kit-maintenance-v1', 'version': 1, 'startedAt': now(), 'tools': update(settings, state),
                       'catalogs': sync(settings, state), 'modelCalls': 0}
             result['integrations'] = integration_pass(settings, home, state)
             result['cache'] = enforce(settings, state, True)

@@ -5,6 +5,24 @@ need pip packages, a database, a background server, or model credentials to
 install. Node 22 or newer is needed for the npm-based tools you choose to
 manage; an existing compatible Node installation is preserved.
 
+## Choose a release
+
+Use the [published releases](https://github.com/nickkostik/modelhub-kit/releases)
+to choose a reviewed version. For this release, either download and extract
+[the v0.2.2 source ZIP](https://github.com/nickkostik/modelhub-kit/archive/refs/tags/v0.2.2.zip)
+or use Git:
+
+```sh
+git clone --branch v0.2.2 --depth 1 https://github.com/nickkostik/modelhub-kit.git modelhub-kit-v0.2.2
+cd modelhub-kit-v0.2.2
+```
+
+The same Git commands work in PowerShell; use `Set-Location modelhub-kit-v0.2.2`
+if preferred. Git is optional when using a downloaded source archive. Inspect
+the source before running the installer below. Tags select a version; a version
+label alone is not an independent signature verification. The release contains
+source, not a preconfigured account or a bundled vendor application.
+
 From a downloaded or cloned copy of this project:
 
 ```sh
@@ -140,3 +158,90 @@ and `--schedule` only to register background maintenance. Neither option is
 implied by enrollment. A remote administrative authorization gap queues work;
 the kit does not transmit passwords or disable strict SSH identity checks.
 See [Fleet delivery](FLEET.md) for boot enrollment and bounded transfer details.
+
+
+## Upgrade the kit itself
+
+`modelhub-kit update` updates selected coding tools. It does **not** download or
+upgrade ModelHub Kit. Choose a newer published release using the steps above,
+review that source, and rerun its installer from the newly extracted checkout:
+
+```sh
+sh scripts/install.sh
+modelhub-kit --version
+```
+
+```powershell
+& .\scripts\install.ps1
+modelhub-kit --version
+```
+
+Use the same home, configuration and state environment as the existing
+installation. There is no need to request prerequisites or scheduling again.
+Existing native tools, sign-ins, configuration and quiet schedules stay in place.
+The installer verifies the previous receipt and current code before replacing
+only its owned application files. An identical repeat changes zero files.
+Changed code queues while another kit reader or writer is active, or process
+visibility is unknown; retry after that work finishes. Custom/unknown files and
+launchers are preserved instead of overwritten. No backup or background
+self-update service is created. An older release is not an automatic rollback:
+review compatibility and its installer before deliberately selecting it.
+
+A source checkout that was downloaded separately is not part of the installed
+application. It is never removed by upgrade or uninstall.
+
+## Remove ModelHub Kit
+
+First inspect a removal plan, then explicitly apply it:
+
+```sh
+modelhub-kit uninstall
+modelhub-kit uninstall --apply
+```
+
+The same commands work in PowerShell. If the command is not on PATH, use its
+full launcher path from the installation table. For an older installation
+without `uninstall`, or to resume an interrupted removal, run from reviewed
+v0.2.2 or newer source instead:
+
+```sh
+python3 -B -m modelhub_kit uninstall
+python3 -B -m modelhub_kit uninstall --apply
+```
+
+```powershell
+py -3 -B -m modelhub_kit uninstall
+py -3 -B -m modelhub_kit uninstall --apply
+```
+
+Use the same configuration/state environment used for scheduling. Remove any
+owned schedules registered under additional state directories first with
+`schedule --remove --apply` in each corresponding environment; uninstall does
+not search other state directories or users. It removes only the current
+state's receipt-owned, idle schedule and the receipt-owned application files
+and launcher. There is no recursive application-tree deletion. Unknown files,
+symlinks, modified code or schedules, active kit work and unknown process state
+queue removal. No session or vendor app is killed to satisfy a guard.
+
+By default, configuration and all remaining state are retained, including
+installed vendor tools, their ownership records, model catalogs, native
+integration records, authentication and preferences. The state writer lock is
+also retained so another invocation cannot lock a different inode. Uninstall
+never removes Python, Node, coding tools, projects, native MCP/ACP settings or
+the separately downloaded source checkout.
+
+For the optional, narrow state cleanup, select it **before** applying removal:
+
+```sh
+modelhub-kit uninstall --clean-state
+modelhub-kit uninstall --clean-state --apply
+```
+
+`--clean-state` removes only the current bounded `last-maintenance.json` receipt
+with the v0.2.2 kit marker and exact known top-level schema. It never purges the
+state tree, caches or tool installations. Older unmarked receipts, custom top-level fields
+or concurrent receipt changes queue this opt-in; omit it to retain the receipt.
+No backups or retained removal logs are created. If an interruption leaves
+partial removal, its recovery receipt stays until the checked files have been
+unlinked; retry from the reviewed source command above. A queued result reports
+any already completed file removals and preserves the remaining unknown data.
