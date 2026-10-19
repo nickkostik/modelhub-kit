@@ -379,13 +379,17 @@ class FleetDeliveryTests(unittest.TestCase):
             def transport(argv, **kwargs):
                 if 'input_data' not in kwargs:
                     return {'exit': 0, 'output': '{"os":"windows","variant":null,"boot":"boot-a"}'}
-                self.assertEqual(argv[-1], command)
-                self.assertEqual(kwargs['input_data'], prefix + payload)
-                return {'exit': 0, 'output': '{"status":"installed-or-current","cleanupComplete":true}',
-                        'inputSent': len(prefix) + len(payload), 'inputFailed': False}
+                operation = json.loads((root / 'state/fleet-inflight.json').read_text())['operations']['workstation']['id']
+                bound_command, bound_prefix = fleet._windows_delivery('windows', 'boot-a', metadata, False, False, operation)
+                self.assertEqual(argv[-1], bound_command)
+                self.assertEqual(kwargs['input_data'], bound_prefix + payload)
+                receipt = dict(fleet._delivery_context(operation), status='installed-or-current', cleanupComplete=True, exitCode=0)
+                return {'exit': 0, 'output': json.dumps(receipt),
+                        'inputSent': len(bound_prefix) + len(payload), 'inputFailed': False}
             with patch.object(fleet, 'run', side_effect=transport):
                 result = fleet.reconcile(inventory, root / 'state', apply=True, source=root, enroll=True)
             self.assertEqual(result['hosts'][0]['status'], 'completed')
+            self.assertEqual(json.loads((root / 'state/fleet-inflight.json').read_text())['operations'], {})
 
     def test_default_maintain_remains_compatible_and_binds_observed_boot(self):
         with tempfile.TemporaryDirectory() as directory:

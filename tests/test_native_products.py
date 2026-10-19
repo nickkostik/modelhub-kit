@@ -238,19 +238,25 @@ class NativeProducts(unittest.TestCase):
             self.assertEqual(updater.update({},self.state,selected=['paseo'])[0]['status'],'unmanaged-installation-preserved')
         self.assertFalse((self.state/'tools/paseo.json').exists())
 
-    def test_latest_owned_codex_repairs_broken_platform_runtime_once(self):
+    def test_latest_owned_codex_requires_explicit_repair_of_broken_platform_runtime(self):
         prefix=self.home/'global';package=prefix/'lib/node_modules/@openai/codex';package.mkdir(parents=True)
         metadata=package/'package.json';metadata.write_text(json.dumps({'name':'@openai/codex','version':'1.2.3','bin':{'codex':'codex.js'}}))
         cli=package/'codex.js';cli.write_text('// owned fixture')
         installs=[]
         def command(argv,**options):
             if argv==['npm','prefix','--global']:return {'exit':0,'output':str(prefix)}
-            if argv[:2]==['npm','install']:installs.append(argv);return {'exit':0,'output':''}
             if '-p' in argv:return {'exit':0,'output':json.dumps({'arch':'x64','platform':'linux'})}
             self.fail('Unexpected child command')
+        def mutation(argv,**options):
+            self.assertEqual(argv[:2],['npm','install'])
+            installs.append(argv)
+            return {'exit':0,'output':'','treeComplete':True,'observationFailed':False}
         definition={'package':'@openai/codex','command':'codex'}
-        with patch.object(updater,'tools',return_value={'codex':definition}),patch.object(updater,'npm_command',return_value=['npm']),patch.object(updater,'owned_installation',return_value=None),patch.object(updater.shutil,'which',side_effect=lambda name:str(cli) if name=='codex' else 'node'),patch.object(updater,'http_json',return_value=({'version':'1.2.3'},{})),patch.object(updater,'run',side_effect=command),patch('modelhub_kit.cache.process_inventory',return_value=[]),patch.object(updater,'healthy_codex',side_effect=[False,True,True]):
-            self.assertEqual(updater.update({},self.state,selected=['codex'])[0]['status'],'updated')
+        with patch.object(updater,'tools',return_value={'codex':definition}),patch.object(updater,'npm_command',return_value=['npm']),patch.object(updater,'owned_installation',return_value=None),patch.object(updater.shutil,'which',side_effect=lambda name:str(cli) if name=='codex' else 'node'),patch.object(updater,'http_json',return_value=({'version':'1.2.3'},{})),patch.object(updater,'run',side_effect=command),patch.object(updater,'run_mutation',side_effect=mutation),patch.object(updater.platform,'system',return_value='Linux'),patch('modelhub_kit.cache.process_inventory',return_value=[]),patch.object(updater,'healthy_codex',side_effect=[False,False,True,True]):
+            for _ in range(2):
+                self.assertEqual(updater.update({},self.state,selected=['codex'])[0]['status'],'repair-needed')
+                self.assertEqual(installs,[])
+            self.assertEqual(updater.update({},self.state,selected=['codex'],repair=True)[0]['status'],'updated')
             self.assertEqual(updater.update({},self.state,selected=['codex'])[0]['status'],'current')
         self.assertEqual(len(installs),1)
         self.assertIn('--include=optional',installs[0]);self.assertIn('@openai/codex@1.2.3',installs[0])
