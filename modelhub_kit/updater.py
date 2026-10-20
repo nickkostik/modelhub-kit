@@ -11,6 +11,20 @@ import stat
 from .core import GuardError, atomic_json, atomic_text, http_json, locations, private_directory, protected, read_json, run, run_mutation
 
 SEMVER = re.compile(r'\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?')
+GROK_API_KEY_NAME = re.compile(r'(?:XAI|GROK|GROK_CODE|GROK_CODE_XAI)_API_KEY(?:_\d+)?|SUPER_GROK_PLAN')
+
+
+def subscription_only_environment(environment=None):
+    """Remove every supported Grok API-key fallback before vendor probes."""
+    result = dict(os.environ if environment is None else environment)
+    for name in list(result):
+        if GROK_API_KEY_NAME.fullmatch(name):
+            result.pop(name, None)
+    result['GROK_DISABLE_API_KEY_AUTH'] = '1'
+    proxy = result.get('GROK_CLI_CHAT_PROXY_BASE_URL', '')
+    if re.match(r'^https?://api\.x\.ai(?:/|$)', proxy, re.I):
+        result.pop('GROK_CLI_CHAT_PROXY_BASE_URL', None)
+    return result
 
 
 def tools():
@@ -212,10 +226,9 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
         raise GuardError('install-missing-requires-explicit-tool-selection')
     if repair and not selected:
         raise GuardError('repair-requires-explicit-tool-selection')
-    env = dict(os.environ, NPM_CONFIG_LOGS_MAX='0', NPM_CONFIG_AUDIT='false', NPM_CONFIG_FUND='false')
+    env = subscription_only_environment(dict(os.environ, NPM_CONFIG_LOGS_MAX='0',
+                                             NPM_CONFIG_AUDIT='false', NPM_CONFIG_FUND='false'))
     # No API-key fallback for subscription tooling. User login files stay untouched.
-    for key in ('XAI_API_KEY', 'GROK_API_KEY'):
-        env.pop(key, None)
     results = []
     npm, prefix = None, None
     for name in names:

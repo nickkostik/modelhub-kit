@@ -314,5 +314,17 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(native.resolve(), outside)
 
 
+    def test_subscription_environment_drops_every_grok_api_key_alias(self):
+        from modelhub_kit import updater
+        source = {
+            'PATH': '/fixture', 'XAI_API_KEY': 'secret', 'XAI_API_KEY_2': 'secret',
+            'GROK_API_KEY': 'secret', 'GROK_CODE_API_KEY': 'secret',
+            'GROK_CODE_XAI_API_KEY_9': 'secret', 'SUPER_GROK_PLAN': 'secret',
+            'GROK_CLI_CHAT_PROXY_BASE_URL': 'https://api.x.ai/v1', 'KEEP': 'value',
+        }
+        result = updater.subscription_only_environment(source)
+        self.assertEqual(result, {'PATH': '/fixture', 'KEEP': 'value', 'GROK_DISABLE_API_KEY_AUTH': '1'})
+        self.assertEqual(source['XAI_API_KEY'], 'secret')
+
 if __name__ == '__main__':
     unittest.main()
