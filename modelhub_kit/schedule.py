@@ -120,8 +120,25 @@ def _arguments(command: list[str]) -> list[str]:
     return [str(Path(executable).absolute()), *command[1:]]
 
 
+def _systemd_value(value: str) -> str:
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError("control-character-in-systemd-value")
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%") + '"'
+
+
 def _systemd_quote(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$") + '"'
+    # ExecStart expands dollars; Environment and path directives do not.
+    return _systemd_value(value.replace("$", "$$"))
+
+
+def _systemd_path(value: str) -> str:
+    # WorkingDirectory consumes the raw directive, not an argv-style quoted
+    # word. Keep spaces, quotes, backslashes and dollars literal. Only unit
+    # specifiers need escaping; reject line continuations and trimmed suffixes.
+    if (not Path(value).is_absolute() or value != value.rstrip() or value.endswith("\\")
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)):
+        raise ValueError("unrepresentable-systemd-working-directory")
+    return value.replace("%", "%%")
 
 
 def _linux(command: list[str], state: Path) -> dict:
@@ -130,8 +147,8 @@ def _linux(command: list[str], state: Path) -> dict:
     workdir = str(Path(__file__).resolve().parents[1])
     service = ("[Unit]\nDescription=ModelHub Kit daily maintenance\n\n[Service]\n"
                "# " + MARKER + "\nType=oneshot\nExecStart=" + " ".join(map(_systemd_quote, command)) +
-               "\nWorkingDirectory=" + _systemd_quote(workdir) +
-               "\nEnvironment=" + _systemd_quote("MODELHUB_KIT_HOME=" + str(state)) +
+               "\nWorkingDirectory=" + _systemd_path(workdir) +
+               "\nEnvironment=" + _systemd_value("MODELHUB_KIT_HOME=" + str(state)) +
                "\nNice=10\nIOSchedulingClass=idle\nCPUQuota=100%\nMemoryHigh=2G\n"
                "TimeoutStartSec=infinity\nStandardOutput=null\nStandardError=null\n")
     cadence = ("[Unit]\nDescription=ModelHub Kit daily maintenance schedule\n\n[Timer]\n# " + MARKER +

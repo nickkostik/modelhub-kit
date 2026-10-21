@@ -66,6 +66,41 @@ class LifecycleTests(unittest.TestCase):
                 payload = schedule._windows_xml(windows)
             self.assertIn('PT0S', payload.decode('utf-16'))
 
+    @unittest.skipUnless(sys.platform.startswith('linux') and shutil.which('systemd-analyze'),
+                         'requires the real Linux systemd unit parser')
+    def test_systemd_schedule_parses_literal_workdir_and_environment(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            workdir = root / 'space %n $HOME "quoted" \\cache'
+            module = workdir / 'modelhub_kit/schedule.py'
+            module.parent.mkdir(parents=True)
+            module.touch()
+            state = root / 'state %n $HOME'
+            with patch.object(schedule, '__file__', str(module)):
+                plan = schedule._linux([sys.executable, '-m', 'modelhub_kit', 'maintain'], state)
+            unit = root / plan['primary'].name
+            unit.write_bytes(plan['files'][plan['primary']])
+            environment = dict(os.environ, SYSTEMD_UNIT_PATH=str(root) + ':/usr/lib/systemd/system',
+                               SYSTEMD_LOG_LEVEL='debug')
+            result = subprocess.run(['systemd-analyze', '--generators=no', '--man=no', 'verify', str(unit)],
+                                    env=environment, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            parsed = result.stdout + result.stderr
+            self.assertIn('WorkingDirectory: ' + str(workdir) + '\n', parsed)
+            self.assertIn('Environment: MODELHUB_KIT_HOME=' + str(state) + '\n', parsed)
+            broken = unit.read_text().replace('WorkingDirectory=' + schedule._systemd_path(str(workdir)),
+                                              'WorkingDirectory=' + schedule._systemd_quote(str(workdir)))
+            unit.write_text(broken)
+            rejected = subprocess.run(['systemd-analyze', '--generators=no', '--man=no', 'verify', str(unit)],
+                                      env=environment, capture_output=True, text=True, timeout=15)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn('WorkingDirectory= path is not absolute', rejected.stderr)
+
+    def test_systemd_path_rejects_unrepresentable_directive_values(self):
+        for value in ('relative', '/tmp/trailing ', '/tmp/trailing\\', '/tmp/line\nbreak', '/tmp/tab\tpath'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                schedule._systemd_path(value)
+
     @staticmethod
     def compact_response(*, active=False, unknown=False):
         return {'exit': 0, 'timedOut': False, 'outputTruncated': False,
