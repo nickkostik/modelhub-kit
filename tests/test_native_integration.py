@@ -138,6 +138,41 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual({n: (root / n).read_bytes() for n in before}, before)
         self.assertFalse(projection.project(cfg, self.home, self.state, 'codex', True)['changed'])
 
+    def test_local_adapter_url_projects_without_changing_protocol_or_credentials(self):
+        cfg = self.source(['low', 'max'])
+        cfg['model_providers']['example']['base_url'] = 'http://127.0.0.1:47836/v1'
+        root = self.home / '.codex'
+        core.atomic_json(root / 'models_cache.json', {'models': [{'slug': 'native-model'}]})
+        for client in ('opencode', 'pi', 'codex'):
+            self.assertEqual(projection.project(cfg, self.home, self.state, client, True)['status'], 'applied')
+        profile = tomllib.loads((root / 'kit-example.config.toml').read_text())
+        provider = profile['model_providers']['kit-example']
+        self.assertEqual(provider['base_url'], 'http://127.0.0.1:47836/v1')
+        self.assertEqual(provider['wire_api'], 'responses')
+        self.assertEqual(provider['env_key'], 'EXAMPLE_ACCESS_TOKEN')
+        self.assertEqual(projection.provider_url('http://[::1]:47836/v1'), 'http://[::1]:47836/v1')
+        self.assertEqual(projection.provider_url('https://api.example.invalid/v1'), 'https://api.example.invalid/v1')
+
+    def test_local_adapter_exception_never_accepts_remote_or_ambiguous_http(self):
+        for url in ('http://api.example.invalid/v1', 'http://localhost:47836/v1',
+                    'http://127.0.0.1.example.invalid/v1', 'http://127.1/v1',
+                    'http://2130706433/v1', 'http://[::ffff:127.0.0.1]/v1', 'http://[::1%25example]/v1',
+                    'http://127.0.0.1:bad/v1', 'http://user@127.0.0.1/v1',
+                    'http://127.0.0.1/v1?token=example', 'http://127.0.0.1/v1#fragment',
+                    'http://127.0.0.1/\n/v1', ' http://127.0.0.1/v1'):
+            with self.subTest(url=url), self.assertRaises(core.GuardError):
+                projection.provider_url(url)
+        with self.assertRaises(core.GuardError):
+            integration.safe_url('http://127.0.0.1:47836/mcp')
+
+    def test_chat_endpoint_is_never_projected_as_codex_responses(self):
+        cfg = self.source()
+        cfg['model_providers']['example'].update(base_url='http://127.0.0.1:47836/v1',
+                                                  protocol='openai-completions')
+        result = projection.project(cfg, self.home, self.state, 'codex', True)
+        self.assertEqual(result['reason'], 'codex-custom-provider-requires-responses-protocol')
+        self.assertFalse((self.home / '.codex/kit-example.config.toml').exists())
+
     def test_pi_preserves_all_representable_efforts_and_queues_lossy_mapping(self):
         cfg = self.source(['none', 'low', 'xhigh', 'max'])
         self.assertEqual(projection.project(cfg, self.home, self.state, 'pi', True)['status'], 'applied')

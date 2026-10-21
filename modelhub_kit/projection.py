@@ -1,11 +1,13 @@
 """Project validated catalog metadata into opt-in native providers and profiles."""
 import copy
 import hashlib
+import ipaddress
 import json
 import os
 import pathlib
 import re
 import tomllib
+import urllib.parse
 from .catalog import models
 from . import catalog
 from .core import GuardError, protected, read_json
@@ -14,6 +16,26 @@ from .integration import (ENV_NAME, SAFE_ID, native_version, native_idle, native
 
 MODEL_CLIENTS = ('codex', 'opencode', 'pi', 'paseo', 't3', 'devin', 'muse', 'claude', 'cursor')
 PROTOCOLS = ('openai-responses', 'openai-completions', 'anthropic-messages')
+
+
+def provider_url(url):
+    """Permit unencrypted adapters only on a literal loopback address."""
+    if not isinstance(url, str) or re.search(r'[\s\x00-\x1f\x7f]', url):
+        raise GuardError('provider-url-without-whitespace-required')
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        parsed.port
+        if parsed.scheme == 'http':
+            if (not parsed.hostname or '%' in parsed.hostname or parsed.username is not None or parsed.password is not None
+                    or parsed.query or parsed.fragment):
+                raise ValueError('nonlocal-http')
+            address = ipaddress.ip_address(parsed.hostname)
+            if not address.is_loopback or address.version == 6 and address != ipaddress.IPv6Address('::1'):
+                raise ValueError('nonlocal-http')
+            return url
+    except ValueError:
+        raise GuardError('https-or-literal-loopback-provider-url-required') from None
+    return safe_url(url)
 
 
 def receipt_names(state, prefix):
@@ -169,7 +191,7 @@ def providers(config, state):
     for name, item in config.get('model_providers', {}).items():
         if not SAFE_ID.fullmatch(name) or not isinstance(item, dict) or set(item) - {'source', 'base_url', 'credential_env', 'protocol'}:
             raise GuardError('safe-model-provider-required')
-        safe_url(item.get('base_url'))
+        provider_url(item.get('base_url'))
         if item.get('protocol') not in PROTOCOLS or not isinstance(item.get('credential_env'), str) or not ENV_NAME.fullmatch(item['credential_env']):
             raise GuardError('explicit-provider-protocol-and-credential-environment-required')
         source = sources.get(item.get('source'))

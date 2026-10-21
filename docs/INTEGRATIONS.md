@@ -80,6 +80,30 @@ credential value without storing or printing it; a rotated or missing source
 credential cannot project the previous account's catalog. Refresh failure retains the last good catalog; it does not erase
 native models.
 
+### Direct and local routing
+
+The kit has no hosted gateway or Cloudflare Worker dependency. Configure each
+provider's own HTTPS API base URL and keep its key in the named environment
+variable on that device. Installing or projecting the kit never uploads those
+keys to a central service and never enables a fallback gateway.
+
+The configured protocol must match the endpoint and every model projected from
+that catalog. Chat Completions, Responses and Anthropic Messages are separate
+wire protocols even when the same vendor serves them. Use separate providers
+and matching catalogs when a vendor publishes different model families through
+different protocols. Check the vendor's current endpoint documentation; a model
+name alone does not establish its supported protocol.
+
+Codex custom profiles require the Responses protocol. A provider that only
+offers Chat Completions or Messages needs a separately installed local protocol
+adapter. Such an adapter can use `http://127.0.0.1:47836/v1` or
+`http://[::1]:47836/v1` as the configured base URL, with
+`protocol: "openai-responses"`. HTTP is accepted only for literal loopback
+addresses; remote APIs still require HTTPS. Catalog downloads and remote MCP
+configuration retain their existing HTTPS requirement. The kit does not install,
+start, authenticate or verify the behavior of an adapter, and a local adapter's
+upstream routing remains its operator's responsibility.
+
 OpenCode receives separate `kit-` providers, exact IDs, supported limits and
 all advertised effort variants. Existing wire variant objects remain intact.
 Anthropic effort projection requires explicit wire variants instead of guessing
