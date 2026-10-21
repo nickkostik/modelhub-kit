@@ -104,6 +104,16 @@ configuration retain their existing HTTPS requirement. The kit does not install,
 start, authenticate or verify the behavior of an adapter, and a local adapter's
 upstream routing remains its operator's responsibility.
 
+For Codex catalogs, the kit keeps the advertised context and output capabilities
+unchanged. Its automatic history-compaction threshold is the smaller of 85% of
+the context window and the space left after reserving the advertised output
+maximum, with a minimum threshold of one token. An unknown output maximum does
+not invent a reservation. This is a history-management hint, not a request
+budget guarantee: new input, tools and reasoning also consume context. The
+provider or local adapter must budget the final serialized request against the
+model's actual combined context window and available output space. Changing a
+catalog cannot repair an already oversized request in flight.
+
 OpenCode receives separate `kit-` providers, exact IDs, supported limits and
 all advertised effort variants. Existing wire variant objects remain intact.
 Anthropic effort projection requires explicit wire variants instead of guessing

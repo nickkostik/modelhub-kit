@@ -186,6 +186,23 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual(projection.project(cfg, self.home, self.state, 'pi', True)['status'], 'queued')
         self.assertEqual(path.read_bytes(), before)
 
+    def test_codex_compaction_reserves_advertised_output_without_clipping_capabilities(self):
+        rows = [
+            {'id': 'large-output', 'context_window': 10000, 'max_output_tokens': 4000,
+             'supported_reasoning_levels': ['high', 'max', 'verified-custom']},
+            {'id': 'small-output', 'context_window': 10000, 'max_output_tokens': 1000},
+            {'id': 'unknown-output', 'context_window': 10000},
+            {'id': 'shared-window', 'context_window': 10000, 'max_output_tokens': 10000},
+        ]
+        models = projection.codex_catalog({'slug': 'native-template'}, rows)['models']
+        self.assertEqual([row['auto_compact_token_limit'] for row in models], [6000, 8500, 8500, 1])
+        for source, rendered in zip(rows, models):
+            self.assertEqual(rendered['context_window'], source['context_window'])
+            self.assertEqual(rendered['max_context_window'], source['context_window'])
+            self.assertEqual(rendered.get('max_output_tokens'), source.get('max_output_tokens'))
+        self.assertEqual([level['effort'] for level in models[0]['supported_reasoning_levels']],
+                         ['high', 'max', 'verified-custom'])
+
     def test_acp_consumers_register_commands_without_launch_or_auth_selection(self):
         cfg = {'client_versions': {'paseo': '1.0.0', 't3': '0.1.0'},
                'acp_agents': {'example': {'command': 'example-acp', 'args': ['acp'], 'env_names': ['EXAMPLE_TOKEN']}}}

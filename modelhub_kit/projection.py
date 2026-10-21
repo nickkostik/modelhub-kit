@@ -275,8 +275,13 @@ def codex_catalog(template, rows):
             if field in row:
                 value[field] = copy.deepcopy(row[field])
         if isinstance(row.get('context_window'), int) and row['context_window'] > 0:
-            value['max_context_window'] = row['context_window']
-            value['auto_compact_token_limit'] = max(1, row['context_window'] * 85 // 100)
+            context = row['context_window']
+            value['max_context_window'] = context
+            threshold = context * 85 // 100
+            output = row.get('max_output_tokens')
+            if type(output) is int and output > 0:
+                threshold = min(threshold, context - output)
+            value['auto_compact_token_limit'] = max(1, threshold)
         value.pop('tool_mode', None)
         result.append(value)
     return {'models': result}
