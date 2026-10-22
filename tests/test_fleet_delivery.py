@@ -99,6 +99,102 @@ class FleetDeliveryTests(unittest.TestCase):
                 operations = json.loads((state / 'fleet-inflight.json').read_text())['operations']
                 self.assertEqual('workstation' in operations, observed_exit != 1)
 
+    @unittest.skipUnless(os.name == 'posix', 'Owned Unix shell transport fixture')
+    def test_actual_installer_failure_keeps_exit_and_only_safe_diagnostics(self):
+        from modelhub_kit.core import run as execute_child
+        cases = [(42, 'modelhub-kit-install stage=initialize category=command-failed', 'initialize'),
+                 (1, 'modelhub-kit-install stage=schedule category=not-ready', 'schedule'),
+                 (1, 'modelhub-kit-install stage=initialize category=command-failed extra=SECRET_PLACEHOLDER', 'installer'),
+                 (75, 'modelhub-kit-install stage=install category=operation-error', None),
+                 (0, 'modelhub-kit-install stage=install category=operation-error', None)]
+        for code, marker, stage in cases:
+            with self.subTest(code=code, stage=stage), tempfile.TemporaryDirectory() as directory:
+                base = pathlib.Path(directory)
+                source, home = base / 'source', base / 'home'
+                source.mkdir(); home.mkdir()
+                self.fixture(source, "import sys\n"
+                    "sys.stderr.write('LOCAL_REMOTE_SECRET_PLACEHOLDER'*12000+'\\n')\n"
+                    "sys.stderr.write(" + repr(marker + '\n') + ")\n"
+                    "print('LOCAL_STDOUT_SECRET_PLACEHOLDER')\nraise SystemExit(" + str(code) + ")\n")
+                inventory = base / 'fleet.json'
+                atomic_json(inventory, {'version': 1, 'hosts': [{'alias': 'workstation', 'os': identity()['os']}]})
+                captured = []
+                def transport(argv, **kwargs):
+                    result = execute_child(shlex.split(argv[-1]), env=dict(os.environ, HOME=str(home)), **kwargs)
+                    captured.append(result)
+                    return result
+                with patch.object(fleet, 'run', side_effect=transport):
+                    report = fleet.reconcile(inventory, base / 'state', apply=True, source=source, enroll=True)
+                row = report['hosts'][0]
+                self.assertTrue(row['custodyKnown'])
+                self.assertEqual(row['status'], 'completed' if code == 0 else 'queued')
+                self.assertEqual(row['exit'], 0 if code == 0 else 75)
+                self.assertTrue(captured[-1]['outputTruncated'])
+                self.assertLessEqual(len(captured[-1]['output']), 65536)
+                if stage:
+                    self.assertEqual(row['installerExit'], code)
+                    self.assertEqual(row['installerDiagnostic']['stage'], stage)
+                    self.assertEqual(row['reason'], 'installer-deferred')
+                else:
+                    self.assertNotIn('installerExit', row)
+                    self.assertNotIn('installerDiagnostic', row)
+                    receipt = fleet._json_response(captured[-1]['output'])
+                    self.assertNotIn('installerExit', receipt)
+                self.assertEqual(json.loads((base / 'state/fleet-inflight.json').read_text())['operations'], {})
+                for text in [json.dumps(report), *[p.read_text() for p in (base / 'state').rglob('*.json')]]:
+                    self.assertNotIn('SECRET_PLACEHOLDER', text)
+                self.assertEqual(list(home.glob('.modelhub-kit-delivery.*')), [])
+
+    def test_only_fixed_diagnostic_pairs_and_bounded_actual_exits_are_retained(self):
+        good = 'modelhub-kit-install stage=initialize category=command-failed'
+        for text in ('', good + ' secret=LOCAL_SECRET_PLACEHOLDER', 'prefix ' + good,
+                     good + '\x00', good + 'X' * 200,
+                     'modelhub-kit-install stage=arbitrary category=command-failed',
+                     good + '\nmodelhub-kit-install stage=schedule category=command-failed',
+                     'LOCAL_SECRET_PLACEHOLDER' * 4000 + '\n' + good):
+            with self.subTest(length=len(text)):
+                value = fleet._installer_failure({'installerExit': 17,
+                    'installerDiagnostic': {'stage': 'LOCAL_SECRET_PLACEHOLDER'}}, text)
+                self.assertEqual(value, {'installerExit': 17,
+                    'installerDiagnostic': {'stage': 'installer', 'category': 'nonzero-exit'}})
+        for code in (None, True, '17', [], 0, 75, 4294967296, -2147483649):
+            with self.subTest(code=code):
+                self.assertEqual(fleet._installer_failure({'installerExit': code}, good), {})
+        for stage, category in fleet.INSTALL_FAILURES:
+            self.assertEqual(fleet._installer_failure({'installerExit': -1},
+                'modelhub-kit-install stage=' + stage + ' category=' + category),
+                {'installerExit': -1, 'installerDiagnostic': {'stage': stage, 'category': category}})
+
+    def test_diagnostics_never_confer_terminal_receipt_or_transport_authority(self):
+        cases = [('wrong-operation', {'operationId': 'b' * 32}, {}),
+                 ('nonterminal', {'operationTerminal': False}, {}),
+                 ('wrong-exit', {'exitCode': 1}, {}),
+                 ('timeout', {}, {'timedOut': True}),
+                 ('incomplete-input', {}, {'inputFailed': True})]
+        for label, edits, transport_edits in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory); state = root / 'state'; inventory = root / 'fleet.json'
+                self.fixture(root)
+                atomic_json(inventory, {'version': 1, 'hosts': [{'alias': 'workstation', 'os': 'linux'}]})
+                def child(argv, **kwargs):
+                    if 'input_data' not in kwargs:
+                        return {'exit': 0, 'output': 'modelhub-kit-probe-v1\nlinux\nfixture\nboot-a\n'}
+                    operation = json.loads((state / 'fleet-inflight.json').read_text())['operations']['workstation']['id']
+                    receipt = dict(fleet._delivery_context(operation), status='queued', cleanupComplete=True,
+                                   exitCode=75, installerExit=17)
+                    receipt.update(edits)
+                    result = {'exit': 75, 'output': 'modelhub-kit-install stage=install category=operation-error\n' + json.dumps(receipt),
+                              'timedOut': False, 'inputSent': len(kwargs['input_data']), 'inputFailed': False}
+                    result.update(transport_edits)
+                    return result
+                with patch.object(fleet, 'run', side_effect=child):
+                    report = fleet.reconcile(inventory, state, apply=True, source=root, enroll=True)
+                row = report['hosts'][0]
+                self.assertFalse(row['custodyKnown'])
+                self.assertNotIn('installerExit', row)
+                self.assertNotIn('installerDiagnostic', row)
+                self.assertIn('workstation', json.loads((state / 'fleet-inflight.json').read_text())['operations'])
+
     def test_disconnect_preserves_fence_and_existing_writer_blocks_new_observer(self):
         with tempfile.TemporaryDirectory() as folder:
             root = pathlib.Path(folder); state = root / 'state'; inventory = root / 'fleet.json'
@@ -326,6 +422,17 @@ class FleetDeliveryTests(unittest.TestCase):
             self.assertIn("$operationId='" + 'a' * 32 + "'", script)
             self.assertIn('operationTerminal=$cleanupOk', script)
             self.assertIn('exitCode=$result', script)
+            self.assertIn('$installerExit=$null', script)
+            self.assertIn("$ErrorActionPreference='Continue';$LASTEXITCODE=$null", script)
+            self.assertIn('if($null -ne $LASTEXITCODE){$result=$LASTEXITCODE;$installerExit=$result}', script)
+            self.assertIn('finally {$ErrorActionPreference=$savedErrorAction}', script)
+            self.assertIn("if($null -eq $installerExit){throw 'installer-unavailable'}", script)
+            self.assertIn("$result=75;$installerExit=$null;$reason='delivery-unavailable'", script)
+            self.assertIn('if($null -ne $installerExit -and $installerExit -notin @(0,75))', script)
+            invocation = next(line for line in script.splitlines() if '& powershell.exe ' in line)
+            self.assertTrue(invocation.endswith(' > $null'))
+            self.assertNotIn('*>', invocation)
+            self.assertLess(script.index("throw 'installer-unavailable'"), script.index('} catch {'))
             self.assertTrue(loader.startswith("$ProgressPreference='SilentlyContinue'"))
             self.assertIn('$modelhubWire.Read($zip,$offset', loader)
             self.assertNotIn('[Console]::OpenStandardInput()', loader)

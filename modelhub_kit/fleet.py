@@ -18,6 +18,27 @@ SSH_OPTIONS = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', '
                '-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=2']
 MAX_DELIVERY = 8 * 1024 * 1024
 INSTALLERS = ('scripts/install.py', 'scripts/install.sh', 'scripts/install.ps1')
+INSTALL_FAILURES = {('install', 'operation-error'), ('initialize', 'command-failed'),
+                    ('schedule', 'command-failed'), ('schedule', 'not-ready'),
+                    ('prerequisite', 'not-ready')}
+
+
+def _installer_failure(response, output):
+    """Reported-only constants; never use diagnostics as terminal/custody proof."""
+    code = response.get('installerExit')
+    if type(code) is not int or not -2147483648 <= code <= 4294967295 or code in (0, 75):
+        return {}
+    found = set()
+    # run() already drains into a 64 KiB tail. Reject an unbounded alternate runner.
+    if isinstance(output, str) and len(output) <= 65536:
+        for line in output.splitlines():
+            if len(line) > 128:
+                continue
+            match = re.fullmatch(r'modelhub-kit-install stage=([a-z-]+) category=([a-z-]+)', line)
+            if match and match.groups() in INSTALL_FAILURES:
+                found.add(match.groups())
+    stage, category = next(iter(found)) if len(found) == 1 else ('installer', 'nonzero-exit')
+    return {'installerExit': code, 'installerDiagnostic': {'stage': stage, 'category': category}}
 
 
 def _source_file(root, relative):
@@ -189,7 +210,7 @@ fi
     context = _delivery_context(operation_id)
     success = shlex.quote(json.dumps(dict(context, status='installed-or-current', cleanupComplete=True, exitCode=0)))
     busy = shlex.quote(json.dumps(dict(context, status='queued', reason='writer-busy', cleanupComplete=True, exitCode=75)))
-    deferred = shlex.quote(json.dumps(dict(context, status='queued', reason='installer-deferred', cleanupComplete=True, exitCode=75)))
+    deferred = shlex.quote(json.dumps(dict(context, status='queued', reason='installer-deferred', cleanupComplete=True, exitCode=75))[:-1])
     return _shell('set -eu\n' + _guard_unix(expected, boot) + r'''
 fail() { printf '{"status":"queued","reason":"%s"}\n' "$1"; exit 75; }
 hash_file() {
@@ -246,11 +267,11 @@ done
         '[ "$(file_identity "$stage/payload.tar")" = "$payload_snapshot" ] || fail delivery-hash-mismatch\n' +
         '[ "$payload_digest" = ' + metadata['sha256'] + ' ] || fail delivery-hash-mismatch\n' +
         'safe_stage || fail unsafe-delivery-directory\ntar -xf "$stage/payload.tar" -C "$stage"\nsafe_stage || fail unsafe-delivery-directory\n' + verify + '\n' + _guard_unix(expected, boot) +
-        'set +e\nsh "$stage/scripts/install.sh" --source "$stage"' + options + ' </dev/null >/dev/null 2>&1\nresult=$?\nset -e\n' +
+        'set +e\nsh "$stage/scripts/install.sh" --source "$stage"' + options + ' </dev/null >/dev/null\nresult=$?\nset -e\n' +
         'cleanup\ntrap - EXIT\n[ "$cleanup_ok" = 1 ] || fail delivery-cleanup-incomplete\n' +
         'if [ "$result" = 0 ]; then printf \'%s\\n\' ' + success + '; '
         'elif [ "$result" = 75 ]; then printf \'%s\\n\' ' + busy + '; exit 75; '
-        'else printf \'%s\\n\' ' + deferred + '; exit 75; fi\n')
+        'else printf \'%s, "installerExit": %s}\\n\' ' + deferred + ' "$result"; exit 75; fi\n')
 
 
 def _windows_loader(script, boot, archive_size=0, archive_sha256=None):
@@ -326,7 +347,7 @@ function Assert-Stage {
  if(-not $stageId -or [ModelHubDeliveryId]::Path($stage,$true) -ne $stageId -or (Stage-Acl) -ne $stageAcl){throw 'unsafe-delivery-directory'}
 }
 $stage=$null;$stageId=$null;$stageAcl=$null;$payloadId=$null;$payloadSha=$null
-$stage=$null;$cleanupOk=$true;$result=75;$reason='delivery-unavailable'
+$stage=$null;$cleanupOk=$true;$result=75;$installerExit=$null;$reason='delivery-unavailable'
 try {
  $tar=Join-Path ([Environment]::SystemDirectory) 'tar.exe'
  if(-not (Test-Path -LiteralPath $tar -PathType Leaf) -or ((Get-Item -LiteralPath $tar).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'tar-unavailable'}
@@ -358,8 +379,11 @@ try {
      (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() -ne $entry.Value.sha256){throw 'delivery-hash-mismatch'}
  }
 ''' + _WINDOWS_IDENTITY + " if($actualBoot -ne " + quote(boot) + "){throw 'different-boot-identity'}\n" +
-        " & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $stage 'scripts/install.ps1') -Source $stage" + options + " *> $null\n" +
-        " $result=$LASTEXITCODE; $reason=if($result -eq 75){'writer-busy'}elseif($result -eq 0){$null}else{'installer-deferred'}\n" + r'''
+        " $savedErrorAction=$ErrorActionPreference\n try {\n  $ErrorActionPreference='Continue';$LASTEXITCODE=$null\n" +
+        "  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $stage 'scripts/install.ps1') -Source $stage" + options + " > $null\n" +
+        "  if($null -ne $LASTEXITCODE){$result=$LASTEXITCODE;$installerExit=$result}\n } finally {$ErrorActionPreference=$savedErrorAction}\n" +
+        " if($null -eq $installerExit){throw 'installer-unavailable'}\n" +
+        " $reason=if($result -eq 75){'writer-busy'}elseif($result -eq 0){$null}else{'installer-deferred'}\n" + r'''
 } catch { if($_.Exception.Message -match '^(?:different-boot-identity|tar-unavailable|incomplete-delivery|delivery-hash-mismatch|delivery-extraction-failed|unsafe-delivery-directory)$'){$reason=$_.Exception.Message} } finally {
  if($stage){try{
   Assert-Stage
@@ -385,7 +409,9 @@ try {
  }catch{$cleanupOk=$false}}
 }
 if(-not $cleanupOk){$result=75;$reason='delivery-cleanup-incomplete'}
-@{format='modelhub-kit-delivery-v1';action='deliver-and-enroll';operationId=$operationId;operationTerminal=$cleanupOk;status=$(if($result -eq 0){'installed-or-current'}else{'queued'});reason=$reason;cleanupComplete=$cleanupOk;exitCode=$result}|ConvertTo-Json -Compress
+$receipt=@{format='modelhub-kit-delivery-v1';action='deliver-and-enroll';operationId=$operationId;operationTerminal=$cleanupOk;status=$(if($result -eq 0){'installed-or-current'}else{'queued'});reason=$reason;cleanupComplete=$cleanupOk;exitCode=$result}
+if($null -ne $installerExit -and $installerExit -notin @(0,75)){$receipt.installerExit=$installerExit}
+$receipt|ConvertTo-Json -Compress
 exit $result
 ''')
     return _windows_loader(script, boot, metadata['size'], metadata['sha256'])
@@ -558,6 +584,8 @@ def _reconcile(inventory, state, apply=False, *, source=None, enroll=False, prer
                              'exit': value['exit'], 'timedOut': value.get('timedOut', False),
                              'reason': reason if reason in reasons else ('different-boot-identity' if value['exit'] == 78 else None),
                              'custodyKnown': terminal})
+            if enroll and terminal and not complete:
+                outcomes[-1].update(_installer_failure(response, value['output']))
         except GuardError as error:
             outcomes.append({'host': name, 'status': 'queued', 'reason': str(error)})
         except OSError:

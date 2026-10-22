@@ -404,6 +404,15 @@ def install(source: Path, schedule: bool = False, dry_run: bool = False, prerequ
     return result
 
 
+def failure_marker(stage: str, category: str):
+    # A remote observer may retain these constants, never child output or paths.
+    allowed = {("install", "operation-error"), ("initialize", "command-failed"),
+               ("schedule", "command-failed"), ("schedule", "not-ready"),
+               ("prerequisite", "not-ready")}
+    if (stage, category) in allowed:
+        print("modelhub-kit-install stage=" + stage + " category=" + category, file=sys.stderr)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=Path(__file__).resolve().parents[1])
@@ -416,10 +425,18 @@ def main() -> int:
         print(json.dumps(result, indent=2))
         if result.get("status") == "queued":
             return 75
-        return 1 if (result.get("initExit", 0) or args.prerequisites and not args.dry_run and not result["node"]["ready"] or
-                     args.schedule and not args.dry_run and not result.get("scheduleConfigured")) else 0
+        if result.get("initExit", 0):
+            failure_marker("initialize", "command-failed")
+        elif args.prerequisites and not args.dry_run and not result["node"]["ready"]:
+            failure_marker("prerequisite", "not-ready")
+        elif args.schedule and not args.dry_run and not result.get("scheduleConfigured"):
+            failure_marker("schedule", "command-failed" if result.get("scheduleExit") else "not-ready")
+        else:
+            return 0
+        return 1
     except (OSError, ValueError, subprocess.SubprocessError):
         print("Installation stopped; an unavailable prerequisite or an existing custom/unowned path was preserved.", file=sys.stderr)
+        failure_marker("install", "operation-error")
         return 1
 
 
