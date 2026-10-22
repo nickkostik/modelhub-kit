@@ -1,4 +1,5 @@
 import contextlib
+import errno
 import io
 import json
 import pathlib
@@ -103,6 +104,111 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(result['afterBytes'], 0)
             self.assertFalse(directory.exists())
             self.assertEqual(unrelated.read_bytes(), b'unrelated fixture')
+
+    def test_unreadable_subtree_never_reports_a_partial_budget_or_removes_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = pathlib.Path(temporary) / 'state'
+            directory = core.private_directory(state / 'cache/npm')
+            visible = directory / 'visible'
+            visible.write_bytes(b'visible fixture')
+            restricted = directory / 'restricted'
+            restricted.mkdir()
+            download = restricted / 'download'
+            download.write_bytes(b'unreadable subtree fixture')
+            scandir = cache.os.scandir
+
+            def deny_subtree(path):
+                if pathlib.Path(path) == restricted:
+                    raise PermissionError(errno.EACCES, 'fixture-cache-access-denied')
+                return scandir(path)
+
+            for apply in (False, True):
+                with self.subTest(apply=apply), patch.object(cache.os, 'scandir', side_effect=deny_subtree), \
+                        patch.object(cache, 'process_inventory') as processes, \
+                        patch.object(cache.shutil, 'rmtree') as remove:
+                    result = cache.enforce({'cache_budget_bytes': 2 * 1024**3}, state, apply=apply)
+                self.assertEqual(result['status'], 'queued-cache-accounting-unavailable')
+                self.assertIsNone(result['beforeBytes'])
+                self.assertIsNone(result['afterBytes'])
+                self.assertEqual(result['budgetBytes'], 2 * 1024**3)
+                self.assertEqual(result['scope'], 'kit-owned-npm-download-cache')
+                processes.assert_not_called()
+                remove.assert_not_called()
+                self.assertEqual(visible.read_bytes(), b'visible fixture')
+                self.assertEqual(download.read_bytes(), b'unreadable subtree fixture')
+
+    def test_disappeared_listed_file_queues_accounting_and_preserves_remaining_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = pathlib.Path(temporary) / 'state'
+            directory = core.private_directory(state / 'cache/npm')
+            disappearing = directory / 'disappearing'
+            disappearing.write_bytes(b'concurrently removed fixture')
+            retained = directory / 'retained'
+            retained.write_bytes(b'retained fixture')
+            lstat = pathlib.Path.lstat
+            removed = []
+
+            def remove_before_stat(path, *args, **kwargs):
+                if path == disappearing:
+                    path.unlink()
+                    removed.append(path)
+                return lstat(path, *args, **kwargs)
+
+            with patch.object(pathlib.Path, 'lstat', new=remove_before_stat), \
+                    patch.object(cache, 'process_inventory') as processes, \
+                    patch.object(cache.shutil, 'rmtree') as remove:
+                result = cache.enforce({'cache_budget_bytes': 1}, state, apply=True)
+            self.assertEqual(removed, [disappearing])
+            self.assertFalse(disappearing.exists())
+            self.assertEqual(result['status'], 'queued-cache-accounting-unavailable')
+            self.assertIsNone(result['beforeBytes'])
+            self.assertIsNone(result['afterBytes'])
+            processes.assert_not_called()
+            remove.assert_not_called()
+            self.assertEqual(retained.read_bytes(), b'retained fixture')
+
+    def test_maintenance_unavailable_accounting_persists_unknown_bytes_and_queued_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = pathlib.Path(temporary)
+            state = home / 'state'
+            directory = core.private_directory(state / 'cache/npm')
+            active = directory / 'runtime.js'
+            active.write_bytes(b'active cache fixture')
+            settings = core.default_config()
+            operation = 'b' * 32
+            output, diagnostic = io.StringIO(), io.StringIO()
+            with patch.object(sys, 'argv', ['modelhub-kit', '--operation-id', operation, 'maintain']), \
+                    patch.object(cli, 'locations', return_value=(home, home / 'config.json', state)), \
+                    patch.object(cli, 'config', return_value=settings), patch.object(cli, 'check_identity', return_value={}), \
+                    patch('modelhub_kit.updater.update', return_value=[{'status': 'current'}]), \
+                    patch('modelhub_kit.catalog.sync', return_value=[{'status': 'ready'}]), \
+                    patch.object(cli, 'integration_pass', return_value=[]), \
+                    patch.object(cache, 'allocated_bytes', side_effect=PermissionError('fixture-private-detail')), \
+                    patch.object(cache, 'process_inventory') as processes, \
+                    patch.object(cache.shutil, 'rmtree') as remove, \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(diagnostic):
+                with self.assertRaises(SystemExit) as stopped:
+                    cli.cli()
+            self.assertEqual(stopped.exception.code, 75)
+            self.assertEqual(diagnostic.getvalue(), '')
+            result = json.loads(output.getvalue())
+            self.assertEqual(result['status'], 'queued')
+            self.assertEqual(result['cache']['status'], 'queued-cache-accounting-unavailable')
+            self.assertIsNone(result['cache']['beforeBytes'])
+            self.assertIsNone(result['cache']['afterBytes'])
+            self.assertEqual(result['operationId'], operation)
+            self.assertTrue(result['operationTerminal'])
+            receipt = core.read_json(state / 'last-maintenance.json')
+            self.assertEqual(receipt['status'], 'queued')
+            self.assertEqual(receipt['cache'], result['cache'])
+            self.assertEqual(receipt['tools'], [{'status': 'current'}])
+            self.assertEqual(receipt['catalogs'], [{'status': 'ready'}])
+            self.assertEqual(receipt['modelCalls'], 0)
+            self.assertNotIn('fixture-private-detail', output.getvalue())
+            self.assertNotIn('fixture-private-detail', json.dumps(receipt))
+            processes.assert_not_called()
+            remove.assert_not_called()
+            self.assertEqual(active.read_bytes(), b'active cache fixture')
 
     def test_maintenance_unknown_inventory_persists_a_queued_receipt_and_exit(self):
         with tempfile.TemporaryDirectory() as temporary:

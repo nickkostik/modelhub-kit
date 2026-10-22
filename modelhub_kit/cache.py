@@ -53,8 +53,11 @@ def process_inventory():
 
 
 def allocated_bytes(root):
+    def unavailable(error):
+        raise error
+
     total, seen = 0, set()
-    for base, directories, files in os.walk(root, followlinks=False):
+    for base, directories, files in os.walk(root, followlinks=False, onerror=unavailable):
         directories[:] = [n for n in directories if not (pathlib.Path(base) / n).is_symlink()]
         for name in files:
             path = pathlib.Path(base) / name
@@ -75,9 +78,13 @@ def enforce(config, state, apply=False):
     if not directory.exists():
         return {'status': 'absent', 'beforeBytes': 0, 'afterBytes': 0, 'budgetBytes': budget}
     protected(directory, True)
-    before = allocated_bytes(directory)
-    result = {'beforeBytes': before, 'afterBytes': before, 'budgetBytes': budget,
+    result = {'beforeBytes': None, 'afterBytes': None, 'budgetBytes': budget,
               'scope': 'kit-owned-npm-download-cache'}
+    try:
+        before = allocated_bytes(directory)
+    except OSError:
+        return dict(result, status='queued-cache-accounting-unavailable')
+    result.update(beforeBytes=before, afterBytes=before)
     if before <= budget:
         return dict(result, status='within-budget')
     if not apply:

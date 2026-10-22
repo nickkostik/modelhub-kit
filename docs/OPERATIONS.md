@@ -96,6 +96,10 @@ environments, model weights, browser profiles, messages, or user files. The
 kit writes bounded metadata receipts instead of retaining updater logs and
 backup trees.
 
+An unreadable cache subtree or a file disappearing during measurement queues
+cleanup with unknown byte counts. A partial scan never counts as within budget,
+and the kit leaves the remaining cache untouched until it can measure it.
+
 For a desktop slowdown, identify the stalled process and its local resource
 controls before clearing caches. [Desktop indexing and memory pressure](DESKTOP-PRESSURE.md)
 describes optional KDE/Baloo checks and native exclusions for generated state.
