@@ -1,3 +1,4 @@
+import copy
 import pathlib
 import tempfile
 import unittest
@@ -46,6 +47,8 @@ class CatalogBudgetTests(unittest.TestCase):
                     projection.codex_catalog({}, [row])
                 with self.assertRaises(core.GuardError):
                     projection.opencode_model(row, 'openai-responses')
+                with self.assertRaises(core.GuardError):
+                    projection.pi_model(row)
 
     def test_equal_source_aliases_normalize_once_without_changing_source(self):
         source = {'id': 'exact-model', 'context_window': 272000, 'contextWindow': 272000,
@@ -68,6 +71,31 @@ class CatalogBudgetTests(unittest.TestCase):
         self.assertFalse(set(catalog.TOKEN_LIMIT_FIELDS).intersection(normalized))
         known = catalog.models({'models': [dict(source, context_window=272000)]})[0]
         self.assertEqual(catalog.model_budgets(known), {'context_window': 272000})
+
+    def test_managed_clients_keep_each_models_declared_context_capacity(self):
+        rows = catalog.models({'models': [
+            {'id': 'larger', 'contextWindow': 272000, 'maxContextWindow': 872000,
+             'maxOutputTokens': 131072, 'max_input_tokens': 800000,
+             'reasoning_efforts': ['high', 'max']},
+            {'id': 'smaller', 'context_window': 65536, 'max_output_tokens': 8192},
+            {'id': 'max-only', 'max_context_window': 131072},
+            {'id': 'base-larger', 'context_window': 262144, 'max_context_window': 131072},
+            {'id': 'unknown'},
+        ]})
+        before = copy.deepcopy(rows)
+        for row, expected in zip(rows, (872000, 65536, 131072, 262144, None)):
+            with self.subTest(model=row['id']):
+                opencode = projection.opencode_model(row, 'openai-responses')
+                pi = projection.pi_model(row)
+                self.assertEqual(opencode.get('limit', {}).get('context'), expected)
+                self.assertEqual(pi.get('contextWindow'), expected)
+                self.assertEqual(pi.get('maxTokens'), row.get('max_output_tokens'))
+        self.assertEqual(projection.opencode_model(rows[0], 'openai-responses')['limit'],
+                         {'context': 872000, 'output': 131072, 'input': 800000})
+        self.assertEqual(set(projection.opencode_model(rows[0], 'openai-responses')['variants']),
+                         {'high', 'max'})
+        self.assertEqual(projection.pi_model(rows[0])['thinkingLevelMap']['max'], 'max')
+        self.assertEqual(rows, before)
 
     def test_invalid_new_metadata_retains_last_valid_catalog(self):
         config = {'catalog_sources': [{'id': 'example', 'url': 'https://catalog.example.invalid/models'}]}

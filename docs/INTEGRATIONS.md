@@ -120,8 +120,10 @@ Known context is retained even when output capacity is unknown. Source-supplied
 must be integers from 1 through 100. In the separate owned Codex catalog, an
 explicit larger `max_context_window` also becomes that model's active
 `context_window`: native Codex otherwise prefers the smaller base and leaves
-the maximum unused. The canonical source keeps its distinct base and maximum;
-native subscription metadata and other clients' projections are unchanged.
+the maximum unused. OpenCode and Pi likewise receive the greater validated base
+or maximum as their active context, including models declaring only a maximum.
+The canonical source keeps its distinct base and maximum; native subscription
+metadata is unchanged. Each managed model retains its own input and output limits.
 Missing maxima never borrow another model's limit, and no global context
 override is written. Configure trusted sources whose declared maxima are usable
 for that provider and credential: the source fingerprint binds configuration and

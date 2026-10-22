@@ -457,7 +457,7 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual(rows[0]['context_window'], 272000)
         self.assertEqual(rows[0]['max_context_window'], 872000)
         self.assertEqual(projection.opencode_model(rows[0], 'openai-responses')['limit'],
-                         {'context': 272000, 'output': 131072})
+                         {'context': 872000, 'output': 131072})
         for unknown in rendered[1:3]:
             for field in catalog.TOKEN_LIMIT_FIELDS:
                 self.assertIsNone(unknown[field])

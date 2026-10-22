@@ -252,10 +252,16 @@ def google_variants(row, variants):
     return {key: copy.deepcopy(value) for key, value in variants[default].items() if key != 'disabled'} if default is not None else None
 
 
+def active_context(budgets):
+    """Use only this source model's validated base or larger declared capacity."""
+    return max((budgets[field] for field in ('context_window', 'max_context_window')
+                if field in budgets), default=None)
+
+
 def opencode_model(row, protocol):
     value = {'id': row['id'], 'name': label(row)}
     budgets = catalog.model_budgets(row)
-    context, output = budgets.get('context_window'), budgets.get('max_output_tokens')
+    context, output = active_context(budgets), budgets.get('max_output_tokens')
     if context is not None:
         # OpenCode requires both numbers. Its native zero-output sentinel uses
         # the client's default, without inventing a source model capability.
@@ -285,6 +291,7 @@ def opencode_model(row, protocol):
 
 
 def pi_model(row):
+    budgets = catalog.model_budgets(row)
     levels = efforts(row)
     reasoning = row.get('reasoning', {})
     wire = row.get('thinkingLevelMap', reasoning.get('thinkingLevelMap') if isinstance(reasoning, dict) else None)
@@ -296,10 +303,11 @@ def pi_model(row):
     value = {'id': row['id'], 'name': label(row), 'reasoning': bool(levels)}
     if levels:
         value['thinkingLevelMap'] = {n: wire.get(n) for n in native}
-    if row.get('context_window'):
-        value['contextWindow'] = row['context_window']
-    if row.get('max_output_tokens'):
-        value['maxTokens'] = row['max_output_tokens']
+    context = active_context(budgets)
+    if context is not None:
+        value['contextWindow'] = context
+    if 'max_output_tokens' in budgets:
+        value['maxTokens'] = budgets['max_output_tokens']
     if row.get('input_modalities'):
         value['input'] = copy.deepcopy(row['input_modalities'])
     return value
