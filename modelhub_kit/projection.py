@@ -15,7 +15,9 @@ from .integration import (ENV_NAME, SAFE_ID, native_version, native_idle, native
                           queued, read_client, safe_url, version_parts)
 
 MODEL_CLIENTS = ('codex', 'opencode', 'pi', 'paseo', 't3', 'devin', 'muse', 'claude', 'cursor')
-PROTOCOLS = ('openai-responses', 'openai-completions', 'anthropic-messages')
+PROTOCOLS = ('openai-responses', 'openai-completions', 'anthropic-messages', 'google-generative-ai')
+GOOGLE_LEVELS = ('minimal', 'low', 'medium', 'high')
+OPENCODE_GO_PREFIX = 'opencode-modelhub-kit-'
 
 
 def provider_url(url):
@@ -67,7 +69,9 @@ def receipt_entries(receipt_file, path, fields):
         raise GuardError('native-retirement-receipt-schema-review-required')
     names = receipt['entries']
     if fields in (('provider',), ('providers',), ('agents', 'providers'), ('providerInstances',)):
-        if any(not name.startswith('kit-') or not SAFE_ID.fullmatch(name[4:]) for name in names):
+        if any(not (name.startswith('kit-') and SAFE_ID.fullmatch(name[4:])
+                    or fields == ('provider',) and name.startswith(OPENCODE_GO_PREFIX)
+                    and SAFE_ID.fullmatch(name[len(OPENCODE_GO_PREFIX):])) for name in names):
             raise GuardError('unrecognized-native-provider-receipt-review-required')
     elif not fields and set(names) - {'models'} or len(fields) == 3 and fields[:2] == ('agents', 'providers') and set(names) - {'additionalModels'}:
         raise GuardError('native-retirement-receipt-schema-review-required')
@@ -216,6 +220,38 @@ def label(row):
     return row.get('name', row.get('display_name', row['id']))
 
 
+def opencode_go_google(provider):
+    """Only the explicitly configured official Go Google origin gets Go auth."""
+    parsed = urllib.parse.urlsplit(provider['base_url'])
+    return (provider['protocol'] == 'google-generative-ai' and parsed.scheme == 'https'
+            and parsed.hostname == 'opencode.ai' and parsed.port in (None, 443)
+            and parsed.path.rstrip('/') == '/inference/go/google/v1beta'
+            and not (parsed.username or parsed.password or parsed.query or parsed.fragment))
+
+
+def google_variants(row, variants):
+    """Use Google's declared wire contract, never translate an output ceiling into thinking."""
+    levels = efforts(row)
+    for effort in levels:
+        if effort not in variants:
+            if effort not in GOOGLE_LEVELS:
+                raise GuardError('google-effort-wire-variants-required')
+            variants[effort] = {'thinkingConfig': {'thinkingLevel': effort, 'includeThoughts': True}}
+        options = variants[effort]
+        thinking = options.get('thinkingConfig')
+        if (set(options) & {'reasoningEffort', 'thinkingLevel', 'thinkingBudget', 'includeThoughts'}
+                or not isinstance(thinking, dict) or not set(thinking) & {'thinkingLevel', 'thinkingBudget'}
+                or set(thinking) - {'thinkingLevel', 'thinkingBudget', 'includeThoughts'}
+                or 'thinkingLevel' in thinking and thinking['thinkingLevel'] not in GOOGLE_LEVELS
+                or 'thinkingBudget' in thinking and (type(thinking['thinkingBudget']) is not int or thinking['thinkingBudget'] < -1)
+                or 'includeThoughts' in thinking and type(thinking['includeThoughts']) is not bool):
+            raise GuardError('google-effort-thinking-config-required')
+    default = row.get('default_reasoning_level', row.get('defaultReasoningEffort'))
+    if default is not None and default not in levels:
+        raise GuardError('source-default-effort-not-in-advertised-levels')
+    return {key: copy.deepcopy(value) for key, value in variants[default].items() if key != 'disabled'} if default is not None else None
+
+
 def opencode_model(row, protocol):
     value = {'id': row['id'], 'name': label(row)}
     budgets = catalog.model_budgets(row)
@@ -231,11 +267,18 @@ def opencode_model(row, protocol):
     variants = copy.deepcopy(row.get('variants', {}))
     if not isinstance(variants, dict) or not all(isinstance(v, dict) for v in variants.values()):
         raise GuardError('native-reasoning-variant-options-required')
-    for effort in efforts(row):
-        if effort not in variants:
-            if protocol == 'anthropic-messages':
-                raise GuardError('anthropic-effort-wire-variants-required')
-            variants[effort] = {'reasoningEffort': effort}
+    if protocol == 'google-generative-ai':
+        default = google_variants(row, variants)
+        if default is not None:
+            value['options'] = default
+        if efforts(row):
+            value['reasoning'] = True
+    else:
+        for effort in efforts(row):
+            if effort not in variants:
+                if protocol == 'anthropic-messages':
+                    raise GuardError('anthropic-effort-wire-variants-required')
+                variants[effort] = {'reasoningEffort': effort}
     if variants:
         value['variants'] = variants
     return value
@@ -302,18 +345,38 @@ def project(config, home, state, client, apply=False):
         selected = providers(config, state)
     except GuardError as error:
         return queued(client, str(error))
-    version = version_parts(native_version(config, home, state, client))
+    google = any(provider['protocol'] == 'google-generative-ai' for provider in selected.values())
+    if google and client != 'opencode':
+        return queued(client, 'google-native-provider-requires-opencode')
+    native = native_version(config, home, state, client)
+    version = version_parts(native)
     if version is None or client != 'codex' and version[0] not in (0, 1):
         return queued(client, 'unknown-native-model-provider-version')
+    if google and version < (1, 2):
+        return queued(client, 'google-native-provider-requires-verified-opencode-version')
     changed_before_error = False
     try:
         if client == 'opencode':
-            packages = {'openai-responses': '@ai-sdk/openai', 'openai-completions': '@ai-sdk/openai-compatible', 'anthropic-messages': '@ai-sdk/anthropic'}
-            rendered = {name: {'name': name, 'npm': packages[p['protocol']],
-                        'options': {'baseURL': p['base_url'], 'apiKey': '{env:' + p['credential_env'] + '}'},
-                        'models': {r['id']: opencode_model(r, p['protocol']) for r in p['rows']}} for name, p in selected.items()}
+            packages = {'openai-responses': '@ai-sdk/openai', 'openai-completions': '@ai-sdk/openai-compatible',
+                        'anthropic-messages': '@ai-sdk/anthropic', 'google-generative-ai': '@ai-sdk/google'}
             path = pathlib.Path(os.environ.get('XDG_CONFIG_HOME', home / '.config')) / 'opencode/opencode.json'
-            retirement_guard(json.loads((read_client(path) or '{}').lstrip('\ufeff')), ('provider',), receipt_entries(receipt, path, ('provider',)), rendered)
+            owned = receipt_entries(receipt, path, ('provider',))
+            rendered = {}
+            for name, provider in selected.items():
+                go = opencode_go_google(provider)
+                go_name = OPENCODE_GO_PREFIX + name.removeprefix('kit-')
+                if go and name in owned or not go and go_name in owned:
+                    raise GuardError('existing-opencode-provider-binding-review-before-protocol-change')
+                native_name = go_name if go else name
+                options = {'baseURL': provider['base_url'], 'apiKey': '{env:' + provider['credential_env'] + '}'}
+                if go:
+                    # The native opencode* branch supplies the actual conversation
+                    # session header; never synthesize a fixed or per-request ID.
+                    options['headers'] = {'Authorization': 'Bearer {env:' + provider['credential_env'] + '}',
+                                          'User-Agent': 'opencode/' + native.lstrip('v')}
+                rendered[native_name] = {'name': native_name, 'npm': packages[provider['protocol']], 'options': options,
+                                         'models': {row['id']: opencode_model(row, provider['protocol']) for row in provider['rows']}}
+            retirement_guard(json.loads((read_client(path) or '{}').lstrip('\ufeff')), ('provider',), owned, rendered)
             result = native_json(client, path, receipt, ('provider',), rendered, apply)
         elif client == 'pi':
             rendered = {name: {'baseUrl': p['base_url'].rstrip('/')[:-3] if p['protocol'] == 'anthropic-messages' and p['base_url'].rstrip('/').endswith('/v1') else p['base_url'], 'api': p['protocol'], 'apiKey': '${' + p['credential_env'] + '}',

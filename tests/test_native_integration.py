@@ -120,6 +120,183 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual(projection.project(cfg, self.home, self.state, 'opencode', True)['status'], 'queued')
         self.assertEqual(path.read_bytes(), before)
 
+    def test_opencode_go_google_uses_native_wire_auth_and_session_namespace(self):
+        cfg = self.source(['low', 'medium', 'high'])
+        cfg.update(version=1, cache_budget_bytes=2 * 1024**3)
+        cfg['model_providers']['example'].update(protocol='google-generative-ai',
+            base_url='https://opencode.ai/inference/go/google/v1beta')
+        config_file = self.home / 'kit.json'
+        core.atomic_json(config_file, cfg)
+        cfg = core.config(config_file)
+        source_file = self.state / 'catalogs/example.json'
+        source = json.loads(source_file.read_text())
+        source['models'][0].update(context_window=1048576, max_output_tokens=65536,
+                                   default_reasoning_level='medium')
+        source['models'].append({'id': 'other-model', 'context_window': 262144,
+                                 'max_output_tokens': 16384, 'supported_reasoning_levels': ['high']})
+        core.atomic_json(source_file, source)
+        path = self.home / '.config/opencode/opencode.json'
+        existing = {'model': 'custom/chosen', 'small_model': 'custom/small',
+                    'provider': {'custom': {'options': {'custom': True}}}}
+        core.atomic_json(path, existing)
+        with mock.patch.dict(os.environ, {'EXAMPLE_ACCESS_TOKEN': 'fixture-secret-must-not-be-persisted'}):
+            self.assertEqual(projection.project(cfg, self.home, self.state, 'opencode', True)['status'], 'applied')
+        doc = json.loads(path.read_text())
+        name = 'opencode-modelhub-kit-example'
+        provider = doc['provider'][name]
+        self.assertEqual(provider['npm'], '@ai-sdk/google')
+        self.assertEqual(provider['options'], {
+            'baseURL': 'https://opencode.ai/inference/go/google/v1beta',
+            'apiKey': '{env:EXAMPLE_ACCESS_TOKEN}',
+            'headers': {'Authorization': 'Bearer {env:EXAMPLE_ACCESS_TOKEN}', 'User-Agent': 'opencode/1.2.0'}})
+        # OpenCode's native opencode* provider branch creates the real session
+        # header. The kit must not invent a shared or random conversation ID.
+        self.assertNotIn('x-opencode-session', path.read_text())
+        first = provider['models']['demo-model']
+        self.assertEqual(first['limit'], {'context': 1048576, 'output': 65536})
+        self.assertEqual(provider['models']['other-model']['limit'], {'context': 262144, 'output': 16384})
+        self.assertTrue(first['reasoning'])
+        expected = {level: {'thinkingConfig': {'thinkingLevel': level, 'includeThoughts': True}}
+                    for level in ('low', 'medium', 'high')}
+        self.assertEqual(first['variants'], expected)
+        self.assertEqual(first['options'], expected['medium'])
+        self.assertNotIn('options', provider['models']['other-model'])
+        self.assertEqual(doc['model'], existing['model'])
+        self.assertEqual(doc['small_model'], existing['small_model'])
+        self.assertEqual(doc['provider']['custom'], existing['provider']['custom'])
+        receipt = self.state / 'projection-opencode.json'
+        self.assertEqual(set(json.loads(receipt.read_text())['entries']), {name})
+        self.assertNotIn('fixture-secret-must-not-be-persisted', path.read_text() + receipt.read_text())
+        before = path.read_bytes(), receipt.read_bytes()
+        self.assertFalse(projection.project(cfg, self.home, self.state, 'opencode', True)['changed'])
+        self.assertEqual((path.read_bytes(), receipt.read_bytes()), before)
+
+    def test_generic_google_keeps_api_key_and_exact_custom_thinking_variants(self):
+        cfg = self.source(['low', 'max', 'verified-custom'])
+        cfg['model_providers']['example']['protocol'] = 'google-generative-ai'
+        source_file = self.state / 'catalogs/example.json'
+        source = json.loads(source_file.read_text())
+        explicit = {'max': {'thinkingConfig': {'thinkingBudget': -1, 'includeThoughts': True}},
+                    'verified-custom': {'thinkingConfig': {'thinkingBudget': 8192, 'includeThoughts': True}}}
+        source['models'][0].update(variants=explicit, default_reasoning_level='max')
+        core.atomic_json(source_file, source)
+        self.assertEqual(projection.project(cfg, self.home, self.state, 'opencode', True)['status'], 'applied')
+        path = self.home / '.config/opencode/opencode.json'
+        provider = json.loads(path.read_text())['provider']['kit-example']
+        self.assertEqual(provider['npm'], '@ai-sdk/google')
+        self.assertEqual(provider['options'], {'baseURL': 'https://api.example.invalid/v1',
+                                              'apiKey': '{env:EXAMPLE_ACCESS_TOKEN}'})
+        model = provider['models']['demo-model']
+        self.assertEqual(model['limit'], {'context': 10000, 'output': 0})
+        self.assertEqual(model['variants']['max'], explicit['max'])
+        self.assertEqual(model['variants']['verified-custom'], explicit['verified-custom'])
+        self.assertEqual(model['variants']['low'], {'thinkingConfig': {'thinkingLevel': 'low', 'includeThoughts': True}})
+        self.assertEqual(model['options'], explicit['max'])
+        self.assertNotIn('reasoningEffort', path.read_text())
+
+    def test_google_invalid_or_unmapped_efforts_preserve_last_native_config(self):
+        cfg = self.source(['low'])
+        cfg['model_providers']['example']['protocol'] = 'google-generative-ai'
+        self.assertEqual(projection.project(cfg, self.home, self.state, 'opencode', True)['status'], 'applied')
+        path = self.home / '.config/opencode/opencode.json'
+        receipt = self.state / 'projection-opencode.json'
+        before = path.read_bytes(), receipt.read_bytes()
+        source_file = self.state / 'catalogs/example.json'
+        source = json.loads(source_file.read_text())
+        cases = [
+            {'supported_reasoning_levels': ['max']},
+            {'variants': {'low': {'reasoningEffort': 'low'}}},
+            {'variants': {'low': {'thinkingLevel': 'low'}}},
+            {'variants': {'low': {'thinkingConfig': {'thinkingLevel': 'max'}}}},
+            {'variants': {'low': {'thinkingConfig': {'thinkingBudget': True}}}},
+            {'variants': {'low': {'thinkingConfig': {'thinkingBudget': -2}}}},
+            {'variants': {'low': {'thinkingConfig': {'thinkingLevel': 'low', 'unknown': True}}}},
+            {'default_reasoning_level': 'not-advertised'},
+        ]
+        for changes in cases:
+            with self.subTest(changes=changes):
+                row = {'id': 'demo-model', 'context_window': 10000, 'supported_reasoning_levels': ['low'], **changes}
+                core.atomic_json(source_file, {**source, 'models': [row]})
+                self.assertEqual(projection.project(cfg, self.home, self.state, 'opencode', True)['status'], 'queued')
+                self.assertEqual((path.read_bytes(), receipt.read_bytes()), before)
+
+    def test_google_unsupported_clients_and_unverified_versions_never_write(self):
+        cfg = self.source(['high'])
+        cfg['model_providers']['example']['protocol'] = 'google-generative-ai'
+        before_home = sorted(self.home.rglob('*'))
+        before_state = {p: p.read_bytes() for p in self.state.rglob('*') if p.is_file()}
+        for client in projection.MODEL_CLIENTS:
+            if client != 'opencode':
+                with self.subTest(client=client):
+                    self.assertEqual(projection.project(cfg, self.home, self.state, client, True)['status'], 'queued')
+        for version in (None, '1.1.99', '0.99.0', '2.0.0', 'unknown'):
+            with self.subTest(version=version), mock.patch.object(projection, 'native_version', return_value=version):
+                self.assertEqual(projection.project(cfg, self.home, self.state, 'opencode', True)['status'], 'queued')
+        self.assertEqual(sorted(self.home.rglob('*')), before_home)
+        self.assertEqual({p: p.read_bytes() for p in self.state.rglob('*') if p.is_file()}, before_state)
+
+    def test_google_go_auth_only_matches_official_endpoint_and_protocol(self):
+        cfg = self.source(['high'])
+        provider = cfg['model_providers']['example']
+        provider.update(protocol='google-generative-ai', base_url='https://opencode.ai/inference/go/google/v1beta')
+        self.assertTrue(projection.opencode_go_google(provider))
+        self.assertTrue(projection.opencode_go_google({**provider, 'base_url': provider['base_url'] + '/'}))
+        for url in ('https://opencode.ai.example.invalid/inference/go/google/v1beta',
+                    'https://example.invalid/inference/go/google/v1beta',
+                    'https://opencode.ai:444/inference/go/google/v1beta',
+                    'https://opencode.ai/inference/go/google/v1beta/extra',
+                    'https://opencode.ai/inference/go/google/v1beta?extra=1'):
+            with self.subTest(url=url):
+                self.assertFalse(projection.opencode_go_google({**provider, 'base_url': url}))
+        self.assertFalse(projection.opencode_go_google({**provider, 'protocol': 'openai-responses'}))
+
+    def test_go_google_never_renames_existing_binding_and_collision_stays_unowned(self):
+        cfg = self.source(['high'])
+        cfg['model_providers']['example']['protocol'] = 'google-generative-ai'
+        path = self.home / '.config/opencode/opencode.json'
+        receipt = self.state / 'projection-opencode.json'
+        self.assertEqual(projection.project(cfg, self.home, self.state, 'opencode', True)['status'], 'applied')
+        before = path.read_bytes(), receipt.read_bytes()
+        cfg['model_providers']['example']['base_url'] = 'https://opencode.ai/inference/go/google/v1beta'
+        result = projection.project(cfg, self.home, self.state, 'opencode', True)
+        self.assertEqual(result['reason'], 'existing-opencode-provider-binding-review-before-protocol-change')
+        self.assertEqual((path.read_bytes(), receipt.read_bytes()), before)
+        path.unlink()
+        receipt.unlink()
+        custom = {'provider': {'opencode-modelhub-kit-example': {'options': {'custom': True}}}}
+        core.atomic_json(path, custom)
+        before = path.read_bytes()
+        self.assertEqual(projection.project(cfg, self.home, self.state, 'opencode', True)['status'], 'queued')
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(receipt.exists())
+
+    def test_go_google_receipt_namespace_is_opencode_only_and_preserves_retirement_guards(self):
+        cfg = self.source(['high'])
+        cfg['model_providers']['example'].update(protocol='google-generative-ai',
+            base_url='https://opencode.ai/inference/go/google/v1beta')
+        self.assertEqual(projection.project(cfg, self.home, self.state, 'opencode', True)['status'], 'applied')
+        path = self.home / '.config/opencode/opencode.json'
+        receipt = self.state / 'projection-opencode.json'
+        name = 'opencode-modelhub-kit-example'
+        self.assertIn(name, projection.receipt_entries(receipt, path, ('provider',)))
+        fake = self.state / 'other-receipt.json'
+        core.atomic_json(fake, {'version': 1, 'path': str(path), 'field': ['providers'], 'entries': {name: {}}})
+        with self.assertRaises(core.GuardError):
+            projection.receipt_entries(fake, path, ('providers',))
+        doc = json.loads(path.read_text())
+        doc['model'] = name + '/demo-model'
+        core.atomic_json(path, doc)
+        before = path.read_bytes(), receipt.read_bytes()
+        cfg['model_providers'] = {}
+        result = projection.project(cfg, self.home, self.state, 'opencode', True)
+        self.assertIn('reference-retired', result['reason'])
+        self.assertEqual((path.read_bytes(), receipt.read_bytes()), before)
+        del doc['model']
+        core.atomic_json(path, doc)
+        self.assertEqual(projection.project(cfg, self.home, self.state, 'opencode', True)['status'], 'applied')
+        self.assertEqual(json.loads(path.read_text())['provider'], {})
+        self.assertEqual(json.loads(receipt.read_text())['entries'], {})
+
     def test_codex_optional_profile_preserves_subscription_config_and_auth(self):
         cfg = self.source()
         root = self.home / '.codex'

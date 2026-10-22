@@ -71,8 +71,8 @@ A provider consumes one configured, validated last-good catalog source:
 }
 ```
 
-Protocols are `openai-responses`, `openai-completions` and
-`anthropic-messages`. The base URL and explicit credential reference belong to
+Protocols are `openai-responses`, `openai-completions`,
+`anthropic-messages` and `google-generative-ai`. The base URL and explicit credential reference belong to
 that custom provider. Native subscription credentials are never reused for it.
 Catalog identity must still match its configured source URL, credential
 reference and current credential scope. Source-scope checks hash a domain-separated
@@ -88,7 +88,7 @@ variable on that device. Installing or projecting the kit never uploads those
 keys to a central service and never enables a fallback gateway.
 
 The configured protocol must match the endpoint and every model projected from
-that catalog. Chat Completions, Responses and Anthropic Messages are separate
+that catalog. Chat Completions, Responses, Anthropic Messages and Google GenerateContent are separate
 wire protocols even when the same vendor serves them. Use separate providers
 and matching catalogs when a vendor publishes different model families through
 different protocols. Check the vendor's current endpoint documentation; a model
@@ -128,7 +128,7 @@ Codex loads `model_catalog_json` at startup. After finishing active work, restar
 the Codex process that uses the catalog to load changed context limits; writing
 the catalog alone does not update a running process.
 
-OpenCode receives separate `kit-` providers, exact IDs, supported limits and
+OpenCode receives separate owned providers, exact IDs, supported limits and
 all advertised effort variants. Existing wire variant objects remain intact.
 Known context does not require a known output ceiling: OpenCode's required
 output field receives its [native `0` marker for the client's own output default](https://github.com/anomalyco/opencode/blob/v1.2.0/packages/opencode/src/provider/transform.ts#L710).
@@ -141,6 +141,44 @@ thinking budgets. Pi receives separate providers in `models.json`; an explicit
 `thinkingLevelMap` can map native picker levels to different provider strings.
 If Pi's native keys cannot represent every advertised effort, the projection
 queues without clipping the source or modifying the current provider.
+
+### Native Google in OpenCode
+
+`google-generative-ai` projects through OpenCode's `@ai-sdk/google` provider,
+with the configured native Google API base URL. This path requires a verified
+OpenCode 1.x version at least 1.2, whose bundled Google SDK supports the reviewed
+options. Older, unknown and unreviewed major versions queue. Other clients queue
+this protocol instead of treating a Google endpoint as OpenAI-compatible. The
+kit does not add a protocol gateway.
+
+Advertised `minimal`, `low`, `medium` and `high` efforts use
+`thinkingConfig: {"thinkingLevel": "<effort>", "includeThoughts": true}`.
+A source-declared default effort also becomes that model's default options.
+Models requiring thinking budgets, or efforts such as `max` and custom names,
+need explicit source `variants` using the model's documented Google options,
+for example `{"thinkingConfig": {"thinkingBudget": 8192, "includeThoughts": true}}`.
+The kit preserves those exact variants and does not derive a thinking budget
+from the model's output ceiling. An unrepresentable effort or invalid default
+queues the projection, preserving the previous provider and every advertised
+choice. Each model keeps its own context and output limits.
+
+For the exact official Go base URL
+`https://opencode.ai/inference/go/google/v1beta`, a new binding receives the owned
+ID `opencode-modelhub-kit-<name>`. This opts into the verified native OpenCode
+conversation-header branch: OpenCode supplies `x-opencode-session` for the real
+conversation. The kit writes no fixed or random session header. It supplies the
+verified client version in `User-Agent` and the required Bearer header, using
+the same `{env:VARIABLE}` reference as the native Google SDK's `apiKey`. Only
+references are written; the SDK resolves the device's credential at runtime.
+Other Google endpoints retain the ordinary `kit-<name>` ID and native SDK
+authentication, without Go headers.
+
+Existing owned bindings are never renamed to enter or leave the Go namespace;
+such a change queues for explicit review, as do collisions and modified owned
+entries. Global `model` and `small_model` settings remain untouched. OpenCode
+retains its native auxiliary-model selection when `small_model` is unset; that
+selection may use a different provider. Choose `small_model` explicitly in the
+native configuration when a particular auxiliary route is required.
 
 Codex receives separate `kit-<provider>.config.toml` profiles and owned JSON
 catalogs, using a local native model-metadata template. Select such a profile
@@ -207,4 +245,6 @@ with the agent; no authentication method is automatically selected. Listed
 - [T3 ACP provider settings](https://github.com/pingdotgg/t3code/blob/main/packages/provider-acp-registry/src/settings.ts) and [provider-instance schema](https://github.com/pingdotgg/t3code/blob/main/packages/contracts/src/providerInstance.ts)
 - [Codex profiles, catalogs and credential environment references](https://developers.openai.com/codex/config-reference)
 - [OpenCode providers](https://opencode.ai/docs/providers/), [ACP model/variant IDs](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/acp/config-option.ts), and [Pi model configuration](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md)
+- [Go endpoints and coding-agent headers](https://opencode.ai/v2/docs/console/go/#endpoints), [native Gemini requests](https://opencode.ai/v2/docs/console/api/inference/#gemini), and [Google SDK options](https://ai-sdk.dev/providers/ai-sdk-providers/google)
+- [Reviewed OpenCode 1.2 Google SDK dependency](https://github.com/anomalyco/opencode/blob/v1.2.0/packages/opencode/package.json), [native conversation headers](https://github.com/anomalyco/opencode/blob/v1.2.0/packages/opencode/src/session/llm.ts), and [auxiliary-model selection](https://github.com/anomalyco/opencode/blob/v1.2.0/packages/opencode/src/provider/provider.ts)
 - [Current Codex adapter](https://github.com/agentclientprotocol/codex-acp) and [Claude adapter](https://github.com/agentclientprotocol/claude-agent-acp)

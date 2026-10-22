@@ -588,7 +588,7 @@ def config(path):
         credential_name = provider.get('credential_env')
         if not isinstance(credential_name, str) or not re.fullmatch(r'[A-Z][A-Z0-9_]{0,127}', credential_name):
             raise GuardError('credential-environment-name-required')
-        if provider.get('protocol') not in ('openai-completions', 'openai-responses', 'anthropic-messages'):
+        if provider.get('protocol') not in ('openai-completions', 'openai-responses', 'anthropic-messages', 'google-generative-ai'):
             raise GuardError('explicit-supported-provider-protocol-required')
     if (not isinstance(versions, dict) or len(versions) > 64
             or any(not safe_id(k) or not isinstance(v, str) or not re.fullmatch(r'[A-Za-z0-9.+_-]{1,128}', v)
