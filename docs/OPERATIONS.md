@@ -96,6 +96,10 @@ environments, model weights, browser profiles, messages, or user files. The
 kit writes bounded metadata receipts instead of retaining updater logs and
 backup trees.
 
+For a desktop slowdown, identify the stalled process and its local resource
+controls before clearing caches. [Desktop indexing and memory pressure](DESKTOP-PRESSURE.md)
+describes optional KDE/Baloo checks and native exclusions for generated state.
+
 ## Daily background maintenance
 
 `schedule` is a plan. `schedule --apply` registers an owned per-user job.
