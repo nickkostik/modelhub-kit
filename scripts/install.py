@@ -137,12 +137,13 @@ def atomic_write(path: Path, data: bytes, mode: int = 0o600, *, expected=_UNSPEC
     if hasattr(os, "getuid") and (info.st_uid != os.getuid() or info.st_mode & 0o022):
         raise ValueError("An unowned or shared writable installation directory was preserved")
     parent_identity = (info.st_dev, info.st_ino, info.st_mode, info.st_uid)
-    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
-        temporary = Path(stream.name)
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
+    temporary = None
     try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
         temporary.chmod(mode)
         info = path.parent.stat()
         if path.parent.resolve() != path.parent.absolute() or (info.st_dev, info.st_ino, info.st_mode, info.st_uid) != parent_identity:
@@ -150,7 +151,14 @@ def atomic_write(path: Path, data: bytes, mode: int = 0o600, *, expected=_UNSPEC
         unchanged(path, expected)
         os.replace(temporary, path)
     finally:
-        temporary.unlink(missing_ok=True)
+        pending_error = sys.exc_info()[0] is not None
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                # Keep the original write/promotion errno if cleanup also fails.
+                if not pending_error:
+                    raise
     return True
 
 
