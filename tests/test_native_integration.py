@@ -257,6 +257,38 @@ class NativeIntegration(unittest.TestCase):
                                                   'openai-responses')
         self.assertNotIn('input', without_input['limit'])
 
+    def test_imported_source_aliases_preserve_distinct_codex_limits_and_reasoning(self):
+        template = {'slug': 'native-template', 'context_window': 500000,
+                    'max_context_window': 1000000, 'max_output_tokens': 8192,
+                    'auto_compact_token_limit': 400000, 'effective_context_window_percent': 85}
+        rows = catalog.models({'models': [
+            {'id': 'exact-model', 'contextWindow': 272000, 'maxContextWindow': 872000,
+             'maxOutputTokens': 131072, 'supported_reasoning_levels': ['high', 'max', 'verified-custom'],
+             'default_reasoning_level': 'max'},
+            {'id': 'unknown', 'contextWindow': None, 'maxContextWindow': None, 'maxOutputTokens': None},
+            {'id': 'missing'},
+            {'id': 'max-only', 'maxContextWindow': 872000},
+        ]})
+        rendered = projection.codex_catalog(template, rows)['models']
+        exact = rendered[0]
+        self.assertEqual(exact['context_window'], 272000)
+        self.assertEqual(exact['max_context_window'], 872000)
+        self.assertEqual(exact['max_output_tokens'], 131072)
+        self.assertEqual([level['effort'] for level in exact['supported_reasoning_levels']],
+                         ['high', 'max', 'verified-custom'])
+        self.assertEqual(exact['default_reasoning_level'], 'max')
+        self.assertEqual(projection.opencode_model(rows[0], 'openai-responses')['limit'],
+                         {'context': 272000, 'output': 131072})
+        for unknown in rendered[1:3]:
+            for field in catalog.TOKEN_LIMIT_FIELDS:
+                self.assertIsNone(unknown[field])
+        self.assertIsNone(rendered[3]['context_window'])
+        self.assertEqual(rendered[3]['max_context_window'], 872000)
+        for row in rendered:
+            self.assertIsNone(row['auto_compact_token_limit'])
+            self.assertNotIn('effective_context_window_percent', row)
+            self.assertTrue(set(catalog.TOKEN_LIMIT_SOURCE_ALIASES.values()).isdisjoint(row))
+
     def test_opencode_retains_known_context_when_output_is_unknown(self):
         rows = catalog.models({'models': [
             {'id': 'context-only', 'context_window': 131072},

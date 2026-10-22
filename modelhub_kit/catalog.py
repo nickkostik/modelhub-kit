@@ -14,6 +14,11 @@ TOKEN_LIMIT_FIELDS = {
     'max_context_window': None,
     'auto_compact_token_limit': None,
 }
+TOKEN_LIMIT_SOURCE_ALIASES = {
+    'context_window': 'contextWindow',
+    'max_output_tokens': 'maxOutputTokens',
+    'max_context_window': 'maxContextWindow',
+}
 MODEL_BUDGET_FIELDS = (*TOKEN_LIMIT_FIELDS, 'effective_context_window_percent', 'limit', 'limits')
 
 
@@ -29,6 +34,8 @@ def model_budgets(row):
     result = {}
     for field, alias in TOKEN_LIMIT_FIELDS.items():
         declared = [row.get(field)]
+        if field in TOKEN_LIMIT_SOURCE_ALIASES:
+            declared.append(row.get(TOKEN_LIMIT_SOURCE_ALIASES[field]))
         if alias:
             declared.extend(nested.get(alias) for nested in containers)
         known = [value for value in declared if value is not None]
