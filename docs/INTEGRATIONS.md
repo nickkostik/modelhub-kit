@@ -104,18 +104,35 @@ configuration retain their existing HTTPS requirement. The kit does not install,
 start, authenticate or verify the behavior of an adapter, and a local adapter's
 upstream routing remains its operator's responsibility.
 
-For Codex catalogs, the kit keeps the advertised context and output capabilities
-unchanged. Its automatic history-compaction threshold is the smaller of 85% of
-the context window and the space left after reserving the advertised output
-maximum, with a minimum threshold of one token. An unknown output maximum does
-not invent a reservation. This is a history-management hint, not a request
-budget guarantee: new input, tools and reasoning also consume context. The
-provider or local adapter must budget the final serialized request against the
-model's actual combined context window and available output space. Changing a
-catalog cannot repair an already oversized request in flight.
+Catalog limits belong to the exact source model. The kit accepts positive integer
+`context_window`, `max_input_tokens` and `max_output_tokens` fields, or their
+`context`, `input` and `output` equivalents inside `limit` or `limits`. Matching
+declarations are normalized consistently. Missing or null values remain unknown;
+conflicting, malformed or nonpositive declarations reject the refresh and retain
+the last valid catalog. Input capacity is never inferred by subtracting maximum
+output from context capacity.
+
+For Codex catalogs, the kit clears all limits and compaction settings borrowed
+from the native template before applying the selected source model's metadata.
+Known context is retained even when output capacity is unknown. Source-supplied
+`max_context_window`, `auto_compact_token_limit` and
+`effective_context_window_percent` are preserved after validation; percentages
+must be integers from 1 through 100. Otherwise the auto-compaction limit is null,
+so [Codex derives its native default from that model's own context window](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/openai_models.rs).
+The kit sets no global context cap or fixed compaction percentage and does not
+reserve the entire maximum output on every turn. Native Codex can still apply
+its own headroom and compaction safeguards. The provider or local adapter must
+budget the actual serialized request, including tools, reasoning and output;
+changing catalog metadata cannot repair an oversized request already in flight.
 
 OpenCode receives separate `kit-` providers, exact IDs, supported limits and
 all advertised effort variants. Existing wire variant objects remain intact.
+Known context does not require a known output ceiling: OpenCode's required
+output field receives its [native `0` marker for the client's own output default](https://github.com/anomalyco/opencode/blob/v1.2.0/packages/opencode/src/provider/transform.ts#L710).
+The source catalog retains its missing or null output, and an input limit is
+included only when explicitly supplied. A model declaring input or output
+capacity without a known context queues projection instead of losing those
+limits or borrowing another model's context. Entirely unknown limits are omitted.
 Anthropic effort projection requires explicit wire variants instead of guessing
 thinking budgets. Pi receives separate providers in `models.json`; an explicit
 `thinkingLevelMap` can map native picker levels to different provider strings.

@@ -7,6 +7,45 @@ import re
 from .core import GuardError, MetadataHTTPError, atomic_json, http_json, now, read_json
 
 
+TOKEN_LIMIT_FIELDS = {
+    'context_window': 'context',
+    'max_input_tokens': 'input',
+    'max_output_tokens': 'output',
+    'max_context_window': None,
+    'auto_compact_token_limit': None,
+}
+MODEL_BUDGET_FIELDS = (*TOKEN_LIMIT_FIELDS, 'effective_context_window_percent', 'limit', 'limits')
+
+
+def model_budgets(row):
+    """Validate one model's declared limits; missing and null values stay unknown."""
+    containers = []
+    for field in ('limit', 'limits'):
+        nested = row.get(field)
+        if nested is not None:
+            if not isinstance(nested, dict):
+                raise GuardError('object-model-token-limits-required')
+            containers.append(nested)
+    result = {}
+    for field, alias in TOKEN_LIMIT_FIELDS.items():
+        declared = [row.get(field)]
+        if alias:
+            declared.extend(nested.get(alias) for nested in containers)
+        known = [value for value in declared if value is not None]
+        if any(type(value) is not int or value <= 0 for value in known):
+            raise GuardError('positive-model-token-metadata-required')
+        if len(set(known)) > 1:
+            raise GuardError('conflicting-model-token-metadata')
+        if known:
+            result[field] = known[0]
+    percent = row.get('effective_context_window_percent')
+    if percent is not None:
+        if type(percent) is not int or not 1 <= percent <= 100:
+            raise GuardError('model-effective-context-percent-between-1-and-100-required')
+        result['effective_context_window_percent'] = percent
+    return result
+
+
 def source_fingerprint(source):
     """Bind HTTP validators and projections to an origin and credential scope."""
     name = source.get('bearer_env')
@@ -32,11 +71,11 @@ def models(value):
             raise GuardError('unique-exact-model-ids-required')
         seen.add(model_id)
         # Keep capability values intact; never manufacture or cap reasoning levels.
-        fields = ('name', 'display_name', 'context_window', 'max_output_tokens', 'input_modalities',
+        fields = ('name', 'display_name', *MODEL_BUDGET_FIELDS, 'input_modalities',
                   'output_modalities', 'reasoning', 'supported_reasoning_levels', 'supportedReasoningEfforts',
-                  'default_reasoning_level', 'defaultReasoningEffort', 'capabilities', 'variants', 'limits', 'parameters')
+                  'default_reasoning_level', 'defaultReasoningEffort', 'capabilities', 'variants', 'parameters')
         keep = set(fields) | {key for key in row if re.search(r'reason|effort|think', key, re.I)}
-        result.append({'id': model_id, **{key: row[key] for key in row if key in keep}})
+        result.append({'id': model_id, **{key: row[key] for key in row if key in keep}, **model_budgets(row)})
     if not result:
         raise GuardError('empty-catalog-not-activated')
     return result

@@ -186,22 +186,107 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual(projection.project(cfg, self.home, self.state, 'pi', True)['status'], 'queued')
         self.assertEqual(path.read_bytes(), before)
 
-    def test_codex_compaction_reserves_advertised_output_without_clipping_capabilities(self):
+    def test_codex_output_ceiling_does_not_force_early_compaction(self):
         rows = [
-            {'id': 'large-output', 'context_window': 10000, 'max_output_tokens': 4000,
+            {'id': 'large-output', 'context_window': 262144, 'max_output_tokens': 131072,
              'supported_reasoning_levels': ['high', 'max', 'verified-custom']},
-            {'id': 'small-output', 'context_window': 10000, 'max_output_tokens': 1000},
-            {'id': 'unknown-output', 'context_window': 10000},
-            {'id': 'shared-window', 'context_window': 10000, 'max_output_tokens': 10000},
+            {'id': 'small-output', 'context_window': 1048576, 'max_output_tokens': 8192},
+            {'id': 'unknown-output', 'context_window': 200000},
+            {'id': 'shared-window', 'context_window': 131072, 'max_output_tokens': 131072},
         ]
         models = projection.codex_catalog({'slug': 'native-template'}, rows)['models']
-        self.assertEqual([row['auto_compact_token_limit'] for row in models], [6000, 8500, 8500, 1])
         for source, rendered in zip(rows, models):
+            self.assertIsNone(rendered['auto_compact_token_limit'])
             self.assertEqual(rendered['context_window'], source['context_window'])
-            self.assertEqual(rendered['max_context_window'], source['context_window'])
+            self.assertIsNone(rendered['max_context_window'])
+            self.assertNotIn('effective_context_window_percent', rendered)
             self.assertEqual(rendered.get('max_output_tokens'), source.get('max_output_tokens'))
         self.assertEqual([level['effort'] for level in models[0]['supported_reasoning_levels']],
                          ['high', 'max', 'verified-custom'])
+
+    def test_codex_each_model_owns_its_limits_and_explicit_compaction_policy(self):
+        template = {'slug': 'native-template', 'context_window': 272000, 'max_context_window': 1000000,
+                    'max_input_tokens': 250000, 'max_output_tokens': 128000,
+                    'auto_compact_token_limit': 200000, 'effective_context_window_percent': 80,
+                    'limit': {'context': 1000, 'output': 100}, 'limits': {'input': 900},
+                    'base_instructions': 'fixture instructions'}
+        before = json.dumps(template, sort_keys=True)
+        rows = [
+            {'id': 'nested-large', 'limits': {'context': 1048576, 'input': 900000, 'output': 65536}},
+            {'id': 'nested-small', 'limit': {'context': 32768, 'output': 8192}},
+            {'id': 'unknown'},
+            {'id': 'context-only', 'context_window': 131072, 'max_output_tokens': None},
+            {'id': 'source-policy', 'context_window': 524288, 'max_context_window': 1048576,
+             'max_output_tokens': 131072, 'auto_compact_token_limit': 450000,
+             'effective_context_window_percent': 97},
+        ]
+        rendered = projection.codex_catalog(template, catalog.models({'models': rows}))['models']
+        self.assertEqual([row['context_window'] for row in rendered], [1048576, 32768, None, 131072, 524288])
+        self.assertEqual([row['max_input_tokens'] for row in rendered], [900000, None, None, None, None])
+        self.assertEqual([row['max_output_tokens'] for row in rendered], [65536, 8192, None, None, 131072])
+        self.assertEqual([row['max_context_window'] for row in rendered], [None, None, None, None, 1048576])
+        self.assertEqual([row['auto_compact_token_limit'] for row in rendered], [None, None, None, None, 450000])
+        self.assertEqual(rendered[-1]['effective_context_window_percent'], 97)
+        for row in rendered:
+            self.assertEqual(row['base_instructions'], 'fixture instructions')
+            self.assertNotIn('limit', row)
+            self.assertNotIn('limits', row)
+        for row in rendered[:-1]:
+            self.assertNotIn('effective_context_window_percent', row)
+        self.assertEqual(json.dumps(template, sort_keys=True), before)
+
+    def test_native_limits_normalize_top_level_singular_and_plural_sources(self):
+        limits = {'context': 262144, 'input': 220000, 'output': 131072}
+        rows = [
+            {'id': 'top-level', 'context_window': limits['context'], 'max_input_tokens': limits['input'],
+             'max_output_tokens': limits['output']},
+            {'id': 'singular', 'limit': limits},
+            {'id': 'plural', 'limits': limits},
+            {'id': 'same-declarations', 'context_window': limits['context'], 'limit': limits, 'limits': limits},
+        ]
+        for row in catalog.models({'models': rows}):
+            with self.subTest(model=row['id']):
+                native = projection.opencode_model(row, 'openai-responses')
+                self.assertEqual(native['limit'], limits)
+                codex = projection.codex_catalog({}, [row])['models'][0]
+                self.assertEqual(codex['context_window'], limits['context'])
+                self.assertEqual(codex['max_input_tokens'], limits['input'])
+                self.assertEqual(codex['max_output_tokens'], limits['output'])
+                self.assertIsNone(codex['auto_compact_token_limit'])
+        without_input = projection.opencode_model({'id': 'no-input', 'limit': {'context': 131072, 'output': 131072}},
+                                                  'openai-responses')
+        self.assertNotIn('input', without_input['limit'])
+
+    def test_opencode_retains_known_context_when_output_is_unknown(self):
+        rows = catalog.models({'models': [
+            {'id': 'context-only', 'context_window': 131072},
+            {'id': 'nested-input', 'limit': {'context': 262144, 'input': 220000, 'output': None}},
+            {'id': 'null-output', 'context_window': 1048576, 'max_output_tokens': None},
+            {'id': 'unknown'},
+        ]})
+        rendered = [projection.opencode_model(row, 'openai-responses') for row in rows]
+        self.assertEqual(rendered[0]['limit'], {'context': 131072, 'output': 0})
+        self.assertEqual(rendered[1]['limit'], {'context': 262144, 'input': 220000, 'output': 0})
+        self.assertEqual(rendered[2]['limit'], {'context': 1048576, 'output': 0})
+        self.assertNotIn('limit', rendered[3])
+        self.assertNotIn('max_output_tokens', rows[0])
+        self.assertIsNone(rows[2]['max_output_tokens'])
+
+    def test_opencode_unknown_context_cannot_discard_declared_input_or_output(self):
+        cfg = self.source()
+        self.assertEqual(projection.project(cfg, self.home, self.state, 'opencode', True)['status'], 'applied')
+        path = self.home / '.config/opencode/opencode.json'
+        before = path.read_bytes()
+        file = self.state / 'catalogs/example.json'
+        record = core.read_json(file)
+        for limits in ({'output': 131072}, {'input': 220000}):
+            with self.subTest(limits=limits):
+                record['models'] = [{'id': 'incomplete-model', 'limits': limits}]
+                core.atomic_json(file, record)
+                result = projection.project(cfg, self.home, self.state, 'opencode', True)
+                self.assertEqual(result['status'], 'queued')
+                self.assertEqual(result['reason'], 'opencode-known-context-required-for-input-or-output-limits')
+                self.assertEqual(path.read_bytes(), before)
 
     def test_acp_consumers_register_commands_without_launch_or_auth_selection(self):
         cfg = {'client_versions': {'paseo': '1.0.0', 't3': '0.1.0'},

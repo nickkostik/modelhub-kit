@@ -206,9 +206,6 @@ def providers(config, state):
             efforts(row)
             if not isinstance(label(row), str) or not label(row) or len(label(row)) > 1024:
                 raise GuardError('native-model-label-string-required')
-            for field in ('context_window', 'max_output_tokens'):
-                if field in row and (type(row[field]) is not int or row[field] <= 0):
-                    raise GuardError('positive-native-model-token-metadata-required')
             if 'input_modalities' in row and (not isinstance(row['input_modalities'], list) or not all(isinstance(v, str) for v in row['input_modalities'])):
                 raise GuardError('native-model-input-modality-list-required')
         result['kit-' + name] = {**item, 'rows': rows}
@@ -221,12 +218,16 @@ def label(row):
 
 def opencode_model(row, protocol):
     value = {'id': row['id'], 'name': label(row)}
-    limits = row.get('limits', {})
-    context, output = row.get('context_window', limits.get('context')), row.get('max_output_tokens', limits.get('output'))
-    if context and output:
-        if type(context) is not int or type(output) is not int or context <= 0 or output <= 0:
-            raise GuardError('positive-native-model-limits-required')
-        value['limit'] = {'context': context, 'output': output}
+    budgets = catalog.model_budgets(row)
+    context, output = budgets.get('context_window'), budgets.get('max_output_tokens')
+    if context is not None:
+        # OpenCode requires both numbers. Its native zero-output sentinel uses
+        # the client's default, without inventing a source model capability.
+        value['limit'] = {'context': context, 'output': output if output is not None else 0}
+        if 'max_input_tokens' in budgets:
+            value['limit']['input'] = budgets['max_input_tokens']
+    elif output is not None or 'max_input_tokens' in budgets:
+        raise GuardError('opencode-known-context-required-for-input-or-output-limits')
     variants = copy.deepcopy(row.get('variants', {}))
     if not isinstance(variants, dict) or not all(isinstance(v, dict) for v in variants.values()):
         raise GuardError('native-reasoning-variant-options-required')
@@ -265,23 +266,20 @@ def codex_catalog(template, rows):
     result = []
     for index, row in enumerate(rows):
         value = copy.deepcopy(template)
+        # The template supplies native instruction/tool fields, never a different
+        # model's token limits or compaction policy.
+        for field in catalog.MODEL_BUDGET_FIELDS:
+            value.pop(field, None)
+        value.update({field: None for field in catalog.TOKEN_LIMIT_FIELDS})
+        value.update(catalog.model_budgets(row))
         values = efforts(row)
         default = row.get('default_reasoning_level', row.get('defaultReasoningEffort'))
         if default is not None and default not in values:
             raise GuardError('source-default-effort-not-in-advertised-levels')
         value.update(slug=row['id'], display_name=label(row), priority=index, visibility='list', supported_in_api=True,
                      supported_reasoning_levels=[{'effort': e, 'description': e} for e in values], default_reasoning_level=default)
-        for field in ('context_window', 'max_output_tokens', 'input_modalities'):
-            if field in row:
-                value[field] = copy.deepcopy(row[field])
-        if isinstance(row.get('context_window'), int) and row['context_window'] > 0:
-            context = row['context_window']
-            value['max_context_window'] = context
-            threshold = context * 85 // 100
-            output = row.get('max_output_tokens')
-            if type(output) is int and output > 0:
-                threshold = min(threshold, context - output)
-            value['auto_compact_token_limit'] = max(1, threshold)
+        if 'input_modalities' in row:
+            value['input_modalities'] = copy.deepcopy(row['input_modalities'])
         value.pop('tool_mode', None)
         result.append(value)
     return {'models': result}
