@@ -281,7 +281,7 @@ class CoreTests(unittest.TestCase):
 
     def test_windows_system_process_without_commandline_does_not_block(self):
         fake_os = types.SimpleNamespace(name='nt', getpid=lambda: 500, getppid=lambda: 400)
-        value = {'exit': 0, 'outputTruncated': False, 'output': json.dumps([
+        value = {'exit': 0, 'outputTruncated': False, 'timedOut': False, 'output': json.dumps([
             {'ProcessId': 4, 'Name': 'System', 'CommandLine': None},
             {'ProcessId': 20, 'Name': 'svchost.exe', 'CommandLine': None}])}
         with patch.object(cache, 'os', fake_os), patch.object(cache, 'run', return_value=value):

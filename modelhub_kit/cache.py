@@ -15,15 +15,28 @@ def process_inventory():
         command = ['ps', '-axww', '-o', 'pid=', '-o', 'command=']
     try:
         value = run(command, timeout=15)
-        if value['exit'] or value['outputTruncated']:
+        if (not isinstance(value, dict) or type(value.get('exit')) is not int or value['exit'] != 0
+                or value.get('outputTruncated') is not False or value.get('timedOut') is not False
+                or not isinstance(value.get('output'), str) or not value['output'].strip()):
             return None
         result = []
         if os.name == 'nt':
             rows = json.loads(value['output'])
+            if isinstance(rows, dict):
+                rows = [rows]
+            if not isinstance(rows, list) or not rows:
+                return None
             for row in rows:
+                if not isinstance(row, dict) or type(row.get('ProcessId')) is not int or row['ProcessId'] < 0:
+                    return None
+                name, arguments = row.get('Name'), row.get('CommandLine')
+                if (not isinstance(name, str) or not name.strip()
+                        or arguments is not None and not isinstance(arguments, str)):
+                    return None
                 if row['ProcessId'] in (os.getpid(), os.getppid()):
                     continue
-                name, arguments = row.get('Name', ''), row.get('CommandLine')
+                if arguments is not None and not arguments.strip():
+                    arguments = None
                 if not arguments and name.lower() in ('node.exe', 'bun.exe', 'npm.exe', 'npx.exe'):
                     return None
                 result.append(arguments or name)
@@ -35,7 +48,7 @@ def process_inventory():
             if int(row[0]) not in (os.getpid(), os.getppid()):
                 result.append(row[1])
         return result
-    except OSError:
+    except (GuardError, OSError, ValueError, KeyError, TypeError):
         return None
 
 
