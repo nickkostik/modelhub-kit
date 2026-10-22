@@ -4,7 +4,7 @@ import json
 import os
 import pathlib
 import re
-from .core import GuardError, atomic_json, http_json, now, read_json
+from .core import GuardError, MetadataHTTPError, atomic_json, http_json, now, read_json
 
 
 def source_fingerprint(source):
@@ -95,7 +95,10 @@ def sync(config, state, fetch=http_json):
                 record['observedAt'] = now()
                 written = atomic_json(file, record)
             results.append({'source': name, 'status': 'ready', 'models': len(rows), 'changed': changed, 'written': written})
-        except (GuardError, OSError, ValueError, KeyError):
-            results.append({'source': name, 'status': 'refresh-failed-last-good-retained' if prior else 'refresh-failed',
-                            'retained': prior is not None})
+        except (GuardError, OSError, ValueError, KeyError) as error:
+            result = {'source': name, 'status': 'refresh-failed-last-good-retained' if prior else 'refresh-failed',
+                      'retained': prior is not None}
+            if isinstance(error, MetadataHTTPError):
+                result['diagnostic'] = error.diagnostic()
+            results.append(result)
     return results

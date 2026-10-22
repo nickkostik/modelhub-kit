@@ -40,6 +40,17 @@ unknown. A transport failure must not turn a last valid catalog into an empty
 one. Metadata checks do not establish that a subscription is signed in; use
 the provider's own client login flow.
 
+Catalog HTTP failures report only the status, a fixed diagnostic category and
+attempt count. Upstream response bodies, URLs and credentials are never copied
+into diagnostics. Metadata GETs retry an explicit temporary rejection at most
+twice, on the same URL with unchanged authentication and cache validators.
+Only HTTP 429/503 or a recognized temporary error code on HTTP 400 qualify;
+generic HTTP 400, parameter errors, credential/billing errors, connection errors
+and incomplete responses do not retry. `Retry-After` seconds and dates are
+honored; waits longer than five seconds or invalid headers defer to a future
+maintenance run. This policy applies to metadata discovery only. Model requests
+use native harness transports and are not intercepted or replayed by this kit.
+
 Maintenance reports `completed` only when every requested operation is settled.
 Deferred or unknown work produces `queued` and exit 75; failed updates or catalog
 refreshes produce `failed` and exit 1. A retained last-good catalog keeps native

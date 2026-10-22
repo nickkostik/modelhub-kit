@@ -1,6 +1,7 @@
 """Small standard-library primitives. Runtime state never belongs in Git."""
 import contextlib
 import datetime
+import email.utils
 import gzip
 import hashlib
 import http.client
@@ -411,18 +412,111 @@ class SameOriginRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(request, fp, code, msg, headers, newurl)
 
 
+class MetadataHTTPError(GuardError):
+    """Safe metadata diagnostics; never retain an upstream body or credential."""
+    def __init__(self, status, category, attempts, retry_after=None):
+        super().__init__(f'metadata-http-{status}-{category}')
+        self.status, self.category, self.attempts = status, category, attempts
+        self.retry_after = retry_after
+
+    def diagnostic(self):
+        result = {'httpStatus': self.status, 'category': self.category, 'attempts': self.attempts}
+        if self.retry_after is not None:
+            result['retryAfterSeconds'] = self.retry_after
+        return result
+
+
+_METADATA_RETRY_DELAYS = (0.25, 0.5)
+_METADATA_RETRY_WAIT_LIMIT = 5
+_METADATA_ERROR_LIMIT = 16 * 1024
+_CREDENTIAL_ERROR_CODES = frozenset({
+    'invalid_api_key', 'invalid_token', 'invalid_credential', 'invalid_credentials',
+    'authentication_error', 'authentication_failed', 'unauthorized', 'permission_denied',
+    'permission_error', 'access_denied', 'insufficient_quota', 'billing_error',
+})
+_TEMPORARY_ERROR_CODES = frozenset({
+    'rate_limit_exceeded', 'rate_limit_error', 'overloaded_error', 'server_overloaded',
+    'temporarily_unavailable', 'service_unavailable',
+})
+_REQUEST_ERROR_CODES = frozenset({'invalid_request_error', 'invalid_request', 'bad_request'})
+_PARAMETER_ERROR_CODES = frozenset({'unsupported_parameter', 'unknown_parameter', 'invalid_parameter'})
+
+
+def _metadata_rejection(error):
+    """Classify a completed error using constants, not provider-supplied text."""
+    codes, complete = set(), False
+    try:
+        body = error.read(_METADATA_ERROR_LIMIT + 1)
+        complete = len(body) <= _METADATA_ERROR_LIMIT
+        length = error.headers.get('Content-Length') if error.headers else None
+        if length is not None:
+            complete = complete and bool(re.fullmatch(r'[0-9]{1,12}', length)) and int(length) == len(body)
+        if complete and body:
+            value = json.loads(body)
+            if isinstance(value, dict):
+                detail = value.get('error', value)
+                if isinstance(detail, dict):
+                    codes = {detail.get(field) for field in ('code', 'type') if isinstance(detail.get(field), str)}
+    except (OSError, EOFError, http.client.HTTPException, ValueError):
+        # A disconnected or undecodable error is not evidence for replay.
+        complete = False
+    if error.code in (401, 403) or codes & _CREDENTIAL_ERROR_CODES:
+        return 'credential-or-permission', False
+    if codes & _PARAMETER_ERROR_CODES:
+        return 'unsupported-parameter', False
+    if error.code in (400, 429, 503) and codes & _TEMPORARY_ERROR_CODES:
+        return 'temporarily-unavailable', complete
+    if codes & _REQUEST_ERROR_CODES:
+        return 'invalid-request', False
+    if error.code in (429, 503) and not codes:
+        return 'temporarily-unavailable', complete
+    return ('invalid-request' if error.code == 400 else 'request-rejected'), False
+
+
+def _metadata_retry_after(headers):
+    value = headers.get('Retry-After') if headers else None
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) > 128:
+        return False
+    value = value.strip()
+    if re.fullmatch(r'[0-9]{1,10}', value):
+        return int(value)
+    try:
+        date = email.utils.parsedate_to_datetime(value)
+        if date.tzinfo is not None:
+            return max(0, date.timestamp() - time.time())
+    except (ValueError, TypeError, OverflowError):
+        pass
+    return False
+
+
 def http_json(url, headers=None, limit=8 * 1024 * 1024):
+    """Fetch metadata GETs only, with at most two bounded rejection retries."""
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
         raise GuardError('https-without-embedded-credentials-required')
     request = urllib.request.Request(url, headers={'Accept': 'application/json', 'Accept-Encoding': 'identity',
                                                   'User-Agent': 'ModelHub-Kit/' + __version__, **(headers or {})})
-    try:
-        response = urllib.request.build_opener(SameOriginRedirect()).open(request, timeout=30)
-    except urllib.error.HTTPError as error:
-        if error.code == 304:
-            return None, {}
-        raise GuardError('metadata-http-error') from None
+    opener = urllib.request.build_opener(SameOriginRedirect())
+    for attempt in range(len(_METADATA_RETRY_DELAYS) + 1):
+        try:
+            response = opener.open(request, timeout=30)
+            break
+        except urllib.error.HTTPError as error:
+            try:
+                if error.code == 304:
+                    return None, {}
+                category, transient = _metadata_rejection(error)
+                retry_after = _metadata_retry_after(error.headers)
+                failure = MetadataHTTPError(error.code, category, attempt + 1,
+                                            retry_after if retry_after is not False else None)
+            finally:
+                error.close()
+            if (not transient or attempt == len(_METADATA_RETRY_DELAYS) or retry_after is False
+                    or retry_after is not None and retry_after > _METADATA_RETRY_WAIT_LIMIT):
+                raise failure from None
+            time.sleep(max(_METADATA_RETRY_DELAYS[attempt], retry_after or 0))
     try:
         with response:
             if urllib.parse.urlsplit(response.url).scheme != 'https':
