@@ -124,6 +124,9 @@ reserve the entire maximum output on every turn. Native Codex can still apply
 its own headroom and compaction safeguards. The provider or local adapter must
 budget the actual serialized request, including tools, reasoning and output;
 changing catalog metadata cannot repair an oversized request already in flight.
+Codex loads `model_catalog_json` at startup. After finishing active work, restart
+the Codex process that uses the catalog to load changed context limits; writing
+the catalog alone does not update a running process.
 
 OpenCode receives separate `kit-` providers, exact IDs, supported limits and
 all advertised effort variants. Existing wire variant objects remain intact.
