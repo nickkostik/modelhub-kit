@@ -16,6 +16,7 @@ TOKEN_LIMIT_FIELDS = {
 }
 TOKEN_LIMIT_SOURCE_ALIASES = {
     'context_window': 'contextWindow',
+    'max_input_tokens': 'maxInputTokens',
     'max_output_tokens': 'maxOutputTokens',
     'max_context_window': 'maxContextWindow',
 }
@@ -57,6 +58,8 @@ def source_fingerprint(source):
     """Bind HTTP validators and projections to an origin and credential scope."""
     name = source.get('bearer_env')
     scope = {'url': source.get('url'), 'bearer_env': name}
+    if source.get('provider_id') is not None:
+        scope['provider_id'] = source['provider_id']
     if name:
         credential = os.environ.get(name)
         if not credential:
@@ -86,6 +89,61 @@ def models(value):
     if not result:
         raise GuardError('empty-catalog-not-activated')
     return result
+
+
+def source_models(value, source):
+    """Select one explicit Models.dev provider; never match a model across providers."""
+    provider_id = source.get('provider_id')
+    if provider_id is None:
+        return models(value)
+    if not isinstance(provider_id, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,127}', provider_id):
+        raise GuardError('exact-catalog-provider-id-required')
+    providers = value.get('providers', value) if isinstance(value, dict) else None
+    provider = providers.get(provider_id) if isinstance(providers, dict) else None
+    if (not isinstance(provider, dict) or provider.get('id', provider_id) != provider_id
+            or not isinstance(provider.get('models'), dict) or len(provider['models']) > 20000):
+        raise GuardError('exact-catalog-provider-missing-or-invalid')
+    rows = []
+    for model_id, model in provider['models'].items():
+        if not isinstance(model, dict) or model.get('id', model_id) != model_id:
+            raise GuardError('catalog-model-key-disagreement')
+        row = dict(model, id=model_id)
+        # Models.dev uses zero as an unknown capacity. This source-specific
+        # sentinel is not a usable context or output limit. Generic catalogs
+        # keep their strict positive-integer validation.
+        for field in ('limit', 'limits'):
+            if isinstance(row.get(field), dict):
+                row[field] = {key: (None if type(amount) is int and amount == 0
+                                   and key in ('context', 'input', 'output') else amount)
+                              for key, amount in row[field].items()}
+        rows.append(row)
+    return models({'models': rows})
+
+
+def limit_report(config, state):
+    """Read the last metadata observation without network calls or cache writes."""
+    sources = []
+    for source in config.get('catalog_sources', []):
+        name = source.get('id', '')
+        if not isinstance(name, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', name):
+            raise GuardError('unique-safe-source-id-required')
+        result = {'source': name, 'provider_id': source.get('provider_id'), 'models': []}
+        try:
+            cached = read_json(pathlib.Path(state) / 'catalogs' / (name + '.json'))
+            if not isinstance(cached, dict) or cached.get('sourceFingerprint') != source_fingerprint(source):
+                raise GuardError('catalog-scope-unverified')
+            rows = models({'models': cached.get('models')})
+            result.update(status='ready', observedAt=cached.get('observedAt'))
+            for row in rows:
+                budget = model_budgets(row)
+                active = max((budget[key] for key in ('context_window', 'max_context_window') if key in budget), default=None)
+                result['models'].append({'id': row['id'], 'status': 'declared' if active else 'unknown',
+                                         'active_context_window': active, **budget})
+        except (GuardError, OSError, ValueError, KeyError):
+            result['status'] = 'queued-metadata-unavailable'
+        sources.append(result)
+    return {'status': 'queued' if any(row['status'] != 'ready' for row in sources) else 'ready',
+            'readOnly': True, 'modelCalls': 0, 'capacityProbed': False, 'sources': sources}
 
 
 def sync(config, state, fetch=http_json):
@@ -131,7 +189,7 @@ def sync(config, state, fetch=http_json):
                 models({'models': prior['models']})
                 results.append({'source': name, 'status': 'not-modified', 'models': len(prior['models']), 'changed': False})
                 continue
-            rows = models(value)
+            rows = source_models(value, source)
             changed = prior is None or prior['models'] != rows
             record = {'version': 1, 'sourceFingerprint': fingerprint, 'models': rows, 'validators': validators}
             # No timestamp-only history churn. Keep the exact last good validated model set.

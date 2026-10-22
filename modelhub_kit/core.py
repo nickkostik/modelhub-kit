@@ -561,8 +561,11 @@ def config(path):
         raise GuardError('invalid-tool-selection')
     if not isinstance(value.get('catalog_sources', []), list) or len(value.get('catalog_sources', [])) > 16:
         raise GuardError('invalid-catalog-sources')
-    if not all(isinstance(s, dict) and set(s) <= {'id', 'url', 'bearer_env'} for s in value.get('catalog_sources', [])):
+    if not all(isinstance(s, dict) and set(s) <= {'id', 'url', 'bearer_env', 'provider_id'} for s in value.get('catalog_sources', [])):
         raise GuardError('catalog-url-and-environment-references-only')
+    if any('provider_id' in s and (not isinstance(s['provider_id'], str)
+           or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,127}', s['provider_id'])) for s in value.get('catalog_sources', [])):
+        raise GuardError('exact-catalog-provider-id-required')
     if not isinstance(value.get('mcp_servers', {}), dict) or not isinstance(value.get('acp_agents', {}), dict):
         raise GuardError('object-integration-config-required')
     providers = value.get('model_providers', {})

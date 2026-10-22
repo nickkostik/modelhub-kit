@@ -42,12 +42,13 @@ modelhub-kit schedule --apply
 
 Edit your generated configuration, starting from [the empty example](examples/config.json). Model endpoints, MCP URLs and fleet aliases are supplied by each user; no shared service, account, credential, machine inventory, or subscription is shipped.
 
-Catalog source records use `id`, `url`, and optional `bearer_env`. The URL must be HTTPS; authentication is read at runtime from the named environment variable. Only `/models`-style `data` or `models` arrays are accepted. Conditional requests are bound to both the source and credential scope. Configure `model_providers` to project a source into supported native harnesses; these records require `source`, `base_url`, `protocol` and an explicit `credential_env` name, preventing accidental use of another account's credentials. Inference uses your configured provider directly, without a hosted ModelHub gateway. A separately installed local protocol adapter may use a literal loopback HTTP base URL; see [direct and local routing](docs/INTEGRATIONS.md#direct-and-local-routing).
+Catalog source records use `id`, `url`, and optional `bearer_env`. The URL must be HTTPS; authentication is read at runtime from the named environment variable. `/models`-style `data` or `models` arrays are accepted. An optional `provider_id` selects one exact provider from Models.dev's provider dictionary. Conditional requests are bound to the source, provider selection and credential scope. The read-only `limits` command reports per-model declared capacities and unknowns from that scoped cache. Configure `model_providers` to project a source into supported native harnesses; these records require `source`, `base_url`, `protocol` and an explicit `credential_env` name, preventing accidental use of another account's credentials. Inference uses your configured provider directly, without a hosted ModelHub gateway. A separately installed local protocol adapter may use a literal loopback HTTP base URL; see [direct and local routing](docs/INTEGRATIONS.md#direct-and-local-routing).
 
 MCP server records use an HTTPS `url` and optional `bearer_env`, or a literal stdio `command`, `args` and `env_names`. Keep credential values out of configuration and URLs. Inspect a plan before applying:
 
 ```sh
 modelhub-kit sync
+modelhub-kit limits
 modelhub-kit integrate --client codex
 modelhub-kit integrate --client codex --apply
 modelhub-kit project --client opencode

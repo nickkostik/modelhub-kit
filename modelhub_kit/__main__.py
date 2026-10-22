@@ -88,6 +88,7 @@ def main():
     update.add_argument('--dry-run', action='store_true')
     update.add_argument('--repair', action='store_true', help='Explicit one-off reinstall of selected same-version npm tools')
     sub.add_parser('sync', help='Refresh configured official model metadata; no inference')
+    sub.add_parser('limits', help='Report exact-model limits from scoped cached metadata; no inference')
     integrate = sub.add_parser('integrate', help='Plan receipt-owned client MCP entries; preserve unrelated settings')
     from .integration import MCP_CLIENTS
     from .projection import MODEL_CLIENTS
@@ -131,6 +132,9 @@ def main():
         from .lifecycle import uninstall
         return uninstall(home, file, state, apply=args.apply, clean_state=args.clean_state)
     settings = config(file)
+    if args.command == 'limits':
+        from .catalog import limit_report
+        return limit_report(settings, state)
     if args.command == 'doctor':
         from .updater import tools, describe
         return {'version': __version__, 'identity': observed, 'configured': True, 'readOnly': True,

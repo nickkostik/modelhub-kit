@@ -112,6 +112,24 @@ conflicting, malformed or nonpositive declarations reject the refresh and retain
 the last valid catalog. Input capacity is never inferred by subtracting maximum
 output from context capacity.
 
+For a Models.dev metadata source, set `provider_id` on its `catalog_sources`
+entry to the exact provider key from [the provider catalog](https://models.dev/api.json).
+Both that provider dictionary and the `providers` dictionary in
+`https://models.dev/catalog.json` are supported. A missing provider or disagreeing
+model ID rejects the refresh; another provider's similarly named model is never
+substituted. Models.dev's nested zero capacity markers become unknown values.
+Changing `provider_id` invalidates the old HTTP validators and cached scope.
+The selection supplies metadata, not account entitlement or authentication.
+
+After `sync`, run `python3 -m modelhub_kit limits` to inspect each exact model's
+declared base, maximum, active context, input, output and compaction settings.
+The report reads cached observations without network calls or writes and shows
+their observation time. Absent context is reported as unknown, and stale source
+scope is queued for refresh. There are no paid capacity probes, default 500k
+caps, assumed million-token windows, or deductions from a model family name.
+Provider account metadata and official plan documentation take precedence when
+they describe a different route from a public API catalog.
+
 For Codex catalogs, the kit clears all limits and compaction settings borrowed
 from the native template before applying the selected source model's metadata.
 Known context is retained even when output capacity is unknown. Source-supplied
