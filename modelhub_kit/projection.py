@@ -315,6 +315,12 @@ def codex_catalog(template, rows):
             value.pop(field, None)
         value.update({field: None for field in catalog.TOKEN_LIMIT_FIELDS})
         value.update(catalog.model_budgets(row))
+        # Codex resolves a non-null base before the maximum. Activate only this
+        # source model's validated larger maximum in the separate owned catalog;
+        # keep the canonical source and native subscription metadata unchanged.
+        context, maximum = value['context_window'], value['max_context_window']
+        if context is not None and maximum is not None and maximum > context:
+            value['context_window'] = maximum
         values = efforts(row)
         default = row.get('default_reasoning_level', row.get('defaultReasoningEffort'))
         if default is not None and default not in values:

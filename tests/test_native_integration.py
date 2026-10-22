@@ -398,7 +398,7 @@ class NativeIntegration(unittest.TestCase):
              'effective_context_window_percent': 97},
         ]
         rendered = projection.codex_catalog(template, catalog.models({'models': rows}))['models']
-        self.assertEqual([row['context_window'] for row in rendered], [1048576, 32768, None, 131072, 524288])
+        self.assertEqual([row['context_window'] for row in rendered], [1048576, 32768, None, 131072, 1048576])
         self.assertEqual([row['max_input_tokens'] for row in rendered], [900000, None, None, None, None])
         self.assertEqual([row['max_output_tokens'] for row in rendered], [65536, 8192, None, None, 131072])
         self.assertEqual([row['max_context_window'] for row in rendered], [None, None, None, None, 1048576])
@@ -434,7 +434,7 @@ class NativeIntegration(unittest.TestCase):
                                                   'openai-responses')
         self.assertNotIn('input', without_input['limit'])
 
-    def test_imported_source_aliases_preserve_distinct_codex_limits_and_reasoning(self):
+    def test_imported_source_aliases_activate_codex_maximum_without_changing_source(self):
         template = {'slug': 'native-template', 'context_window': 500000,
                     'max_context_window': 1000000, 'max_output_tokens': 8192,
                     'auto_compact_token_limit': 400000, 'effective_context_window_percent': 85}
@@ -448,12 +448,14 @@ class NativeIntegration(unittest.TestCase):
         ]})
         rendered = projection.codex_catalog(template, rows)['models']
         exact = rendered[0]
-        self.assertEqual(exact['context_window'], 272000)
+        self.assertEqual(exact['context_window'], 872000)
         self.assertEqual(exact['max_context_window'], 872000)
         self.assertEqual(exact['max_output_tokens'], 131072)
         self.assertEqual([level['effort'] for level in exact['supported_reasoning_levels']],
                          ['high', 'max', 'verified-custom'])
         self.assertEqual(exact['default_reasoning_level'], 'max')
+        self.assertEqual(rows[0]['context_window'], 272000)
+        self.assertEqual(rows[0]['max_context_window'], 872000)
         self.assertEqual(projection.opencode_model(rows[0], 'openai-responses')['limit'],
                          {'context': 272000, 'output': 131072})
         for unknown in rendered[1:3]:
@@ -465,6 +467,69 @@ class NativeIntegration(unittest.TestCase):
             self.assertIsNone(row['auto_compact_token_limit'])
             self.assertNotIn('effective_context_window_percent', row)
             self.assertTrue(set(catalog.TOKEN_LIMIT_SOURCE_ALIASES.values()).isdisjoint(row))
+
+    def test_codex_owned_profile_activates_only_scoped_exact_source_context_maxima(self):
+        cfg = self.source(['high', 'max', 'verified-custom'])
+        source_file = self.state / 'catalogs/example.json'
+        source = json.loads(source_file.read_text())
+        source['models'] = [
+            {'id': 'expanded', 'contextWindow': 272000, 'maxContextWindow': 872000,
+             'maxOutputTokens': 131072, 'supported_reasoning_levels': ['high', 'max', 'verified-custom'],
+             'default_reasoning_level': 'max'},
+            {'id': 'base-only', 'context_window': 131072},
+            {'id': 'unknown'},
+            {'id': 'max-only', 'max_context_window': 65536},
+            {'id': 'explicit-policy', 'context_window': 262144, 'max_context_window': 524288,
+             'auto_compact_token_limit': 200000, 'effective_context_window_percent': 97},
+        ]
+        core.atomic_json(source_file, source)
+        root = self.home / '.codex'
+        core.atomic_text(root / 'config.toml', 'model = "chosen-subscription-model"\n')
+        core.atomic_json(root / 'auth.json', {'fixture': 'native-auth-must-stay-local'})
+        core.atomic_json(root / 'models_cache.json', {'models': [{'slug': 'native-template',
+            'context_window': 500000, 'max_context_window': 2000000,
+            'auto_compact_token_limit': 450000, 'effective_context_window_percent': 85}]})
+        untouched = {path: path.read_bytes() for path in
+                     (source_file, root / 'config.toml', root / 'auth.json', root / 'models_cache.json')}
+        self.assertEqual(projection.project(cfg, self.home, self.state, 'codex', True)['status'], 'applied')
+        profile_path = root / 'kit-example.config.toml'
+        profile = tomllib.loads(profile_path.read_text())
+        self.assertNotIn('model_context_window', profile)
+        self.assertNotIn('model_auto_compact_token_limit', profile)
+        output_file = pathlib.Path(profile['model_catalog_json'])
+        projected = json.loads(output_file.read_text())['models']
+        self.assertEqual([row['context_window'] for row in projected], [872000, 131072, None, None, 524288])
+        self.assertEqual([row['max_context_window'] for row in projected], [872000, None, None, 65536, 524288])
+        # Native Codex ModelInfo::resolved_context_window prefers the base; its
+        # auto-compaction contract derives 90% then clamps any explicit policy.
+        resolved = [row['context_window'] if row['context_window'] is not None else row['max_context_window']
+                    for row in projected]
+        self.assertEqual(resolved, [872000, 131072, None, 65536, 524288])
+        automatic = [min(context * 9 // 10, row['auto_compact_token_limit'])
+                     if context is not None and row['auto_compact_token_limit'] is not None
+                     else context * 9 // 10 if context is not None else row['auto_compact_token_limit']
+                     for row, context in zip(projected, resolved)]
+        self.assertEqual(automatic, [784800, 117964, None, 58982, 200000])
+        self.assertEqual(projected[0]['max_output_tokens'], 131072)
+        self.assertEqual([effort['effort'] for effort in projected[0]['supported_reasoning_levels']],
+                         ['high', 'max', 'verified-custom'])
+        self.assertEqual(projected[0]['default_reasoning_level'], 'max')
+        self.assertEqual(projected[-1]['effective_context_window_percent'], 97)
+        self.assertEqual({path: path.read_bytes() for path in untouched}, untouched)
+        self.assertFalse(projection.project(cfg, self.home, self.state, 'codex', True)['changed'])
+        owned_files = (output_file, profile_path, self.state / 'projection-codex-catalog-kit-example.json',
+                       self.state / 'projection-codex-profile-kit-example.json')
+        before = {path: path.read_bytes() for path in owned_files}
+        for bad_maximum in (0, '872000', True):
+            with self.subTest(bad_maximum=bad_maximum):
+                core.atomic_json(source_file, {**source, 'models': [{'id': 'expanded', 'context_window': 272000,
+                                                                  'max_context_window': bad_maximum}]})
+                self.assertEqual(projection.project(cfg, self.home, self.state, 'codex', True)['status'], 'queued')
+                self.assertEqual({path: path.read_bytes() for path in owned_files}, before)
+        core.atomic_json(source_file, {**source, 'sourceFingerprint': 'different-source-scope'})
+        result = projection.project(cfg, self.home, self.state, 'codex', True)
+        self.assertEqual(result['reason'], 'matching-last-good-source-catalog-required')
+        self.assertEqual({path: path.read_bytes() for path in owned_files}, before)
 
     def test_opencode_retains_known_context_when_output_is_unknown(self):
         rows = catalog.models({'models': [

@@ -117,7 +117,16 @@ from the native template before applying the selected source model's metadata.
 Known context is retained even when output capacity is unknown. Source-supplied
 `max_context_window`, `auto_compact_token_limit` and
 `effective_context_window_percent` are preserved after validation; percentages
-must be integers from 1 through 100. Otherwise the auto-compaction limit is null,
+must be integers from 1 through 100. In the separate owned Codex catalog, an
+explicit larger `max_context_window` also becomes that model's active
+`context_window`: native Codex otherwise prefers the smaller base and leaves
+the maximum unused. The canonical source keeps its distinct base and maximum;
+native subscription metadata and other clients' projections are unchanged.
+Missing maxima never borrow another model's limit, and no global context
+override is written. Configure trusted sources whose declared maxima are usable
+for that provider and credential: the source fingerprint binds configuration and
+credential scope, but does not independently prove provider entitlement or
+capacity. When the source supplies no explicit auto-compaction limit, it remains null,
 so [Codex derives its native default from that model's own context window](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/openai_models.rs).
 The kit sets no global context cap or fixed compaction percentage and does not
 reserve the entire maximum output on every turn. Native Codex can still apply
