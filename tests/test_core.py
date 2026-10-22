@@ -126,6 +126,7 @@ class CoreTests(unittest.TestCase):
                     return {'exit': 0, 'output': json.dumps({'platform': 'linux', 'arch': 'x64'}) if '-p' in argv else str(prefix)}
                 def install(argv, **kwargs):
                     self.assertIn('install', argv)
+                    self.assertEqual(argv.count('--umask=0022'), 1)
                     core.atomic_json(metadata, dict(data, version='1.1.0'))
                     return {'exit': 0, 'output': '', 'treeComplete': True}
                 with patch.object(updater, 'npm_command', return_value=['npm']), patch.object(updater, 'run', side_effect=query), \
@@ -157,8 +158,40 @@ class CoreTests(unittest.TestCase):
                     result = updater.update({'tools': ['codex']}, state, selected=['codex'] if repair else None, repair=repair)
                 self.assertEqual(result[0]['status'], 'updated' if repair else 'repair-needed')
                 self.assertEqual(mutate.call_count, int(repair))
+                if repair:
+                    self.assertEqual(mutate.call_args.args[0].count('--umask=0022'), 1)
         with self.assertRaisesRegex(core.GuardError, 'repair-requires-explicit-tool-selection'):
             updater.update({'tools': ['codex']}, pathlib.Path('unused-fixture'), repair=True)
+
+    def test_missing_npm_install_uses_scoped_mask_without_rewriting_environment(self):
+        with tempfile.TemporaryDirectory() as folder:
+            state = pathlib.Path(folder) / 'state'
+            metadata = updater.package_file(state / 'npm', '@qwen-code/qwen-code')
+            def query(argv, **kwargs):
+                self.assertNotIn('--umask=0022', argv)
+                return {'exit': 0, 'output': json.dumps({'platform': 'linux', 'arch': 'x64'}) if '-p' in argv else str(state / 'unused-prefix')}
+            def install(argv, **kwargs):
+                self.assertEqual(argv.count('--umask=0022'), 1)
+                self.assertIn('--include=optional', argv)
+                self.assertEqual(argv[argv.index('--prefix') + 1], str(state / 'npm'))
+                self.assertEqual(argv[-1], '@qwen-code/qwen-code@1.1.0')
+                self.assertEqual(kwargs['env']['NPM_CONFIG_UMASK'], '0000')
+                core.atomic_json(metadata, {'name': '@qwen-code/qwen-code', 'version': '1.1.0'})
+                return {'exit': 0, 'output': '', 'treeComplete': True}
+            with patch.dict(os.environ, {'NPM_CONFIG_UMASK': '0000'}), \
+                    patch.object(updater, 'npm_command', return_value=['node', 'npm-cli.js']), \
+                    patch.object(updater, 'run', side_effect=query), \
+                    patch.object(updater, 'run_mutation', side_effect=install) as mutate, \
+                    patch.object(updater.shutil, 'which', side_effect=lambda name: '/fixture/node' if name == 'node' else None), \
+                    patch.object(updater.platform, 'system', return_value='Linux'), \
+                    patch.object(updater, 'http_json', return_value=({'version': '1.1.0'}, {})), \
+                    patch.object(updater, 'expose_installation') as expose, \
+                    patch.object(cache, 'process_inventory', return_value=[]):
+                result = updater.update({}, state, selected=['qwen'], install_missing=True)
+                self.assertEqual(os.environ['NPM_CONFIG_UMASK'], '0000')
+            self.assertEqual(result[0]['status'], 'updated')
+            self.assertEqual(mutate.call_count, 1)
+            expose.assert_called_once()
 
     def test_owned_atomic_helper_has_linux_custody_and_distinct_darwin_staging(self):
         with tempfile.TemporaryDirectory() as folder:

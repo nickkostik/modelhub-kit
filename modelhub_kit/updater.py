@@ -373,7 +373,7 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
             if command and not managed and npm_native_metadata(command, definition) != identity:
                 results.append({'tool': name, 'status': 'unmanaged-installation-preserved'})
                 continue
-            args = npm + ['install', '--global', '--prefix', str(target_prefix), '--include=optional',
+            args = npm + ['install', '--global', '--prefix', str(target_prefix), '--include=optional', '--umask=0022',
                           '--omit=dev', '--engine-strict', '--no-audit', '--no-fund', '--logs-max=0', '--cache', str(cache),
                           '--registry=https://registry.npmjs.org',
                           definition['package'] + '@' + latest]
