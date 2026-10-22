@@ -329,6 +329,241 @@ def idle(product, release, processes):
     return True
 
 
+
+PROMOTION_FORMAT = 'modelhub-kit-native-promotion-v1'
+
+
+def _directory_binding(directory):
+    info = protected(directory, True)
+    return [info.st_dev, info.st_ino, info.st_mode, info.st_uid]
+
+
+def _launcher_snapshot(file):
+    if file.is_symlink():
+        info = file.lstat()
+        if (file.parent.resolve() != file.parent or os.name != 'nt' and info.st_uid != os.getuid()):
+            raise GuardError('unowned-native-pointer')
+        return {'kind': 'symlink', 'target': os.readlink(file), 'id': [info.st_dev, info.st_ino]}
+    if not file.exists():
+        return None
+    return {'kind': 'file', 'sha256': digest(file), 'id': list(file_identity(file))}
+
+
+def _launcher_content(receipt, system):
+    destination = pathlib.Path(receipt['release'])
+    entry, arguments = receipt['entry'], receipt.get('arguments', [])
+    if system == 'Windows':
+        if any(c in str(destination) for c in '%!"\r\n'):
+            raise GuardError('unsafe-native-wrapper-path')
+        return '@"' + str(destination / entry) + '"' + ''.join(' "' + str(destination / a) + '"' for a in arguments) + ' %*\n'
+    if arguments:
+        return '#!/bin/sh\nexec ' + _shell_quote(str(destination / entry)) + ''.join(' ' + _shell_quote(str(destination / a)) for a in arguments) + ' "$@"\n'
+    return None
+
+
+def _launcher_matches(file, receipt, system):
+    text = _launcher_content(receipt, system)
+    if text is None:
+        value = _launcher_snapshot(file)
+        return bool(value and value['kind'] == 'symlink' and value['target'] == str(pathlib.Path(receipt['release']) / receipt['entry']))
+    return not file.is_symlink() and file.exists() and digest(file) == hashlib.sha256(text.encode()).hexdigest() and bool(protected(file).st_mode & 0o111) == (system != 'Windows')
+
+
+def _manifest_valid(files):
+    if not isinstance(files, dict) or not files or len(files) > 20000:
+        return False
+    total = 0
+    for name, row in files.items():
+        if not isinstance(name, str):
+            return False
+        parts = pathlib.PurePosixPath(name).parts
+        if (not parts or '/'.join(parts) != name or pathlib.PurePosixPath(name).is_absolute()
+                or any(p in ('.', '..') or ':' in p or '\\' in p or any(ord(c) < 32 for c in p) for p in parts)
+                or not isinstance(row, dict) or set(row) != {'sha256', 'size', 'executable'}
+                or not re.fullmatch(r'[a-f0-9]{64}', row.get('sha256', ''))
+                or type(row.get('size')) is not int or row['size'] < 0 or type(row.get('executable')) is not bool):
+            return False
+        total += row['size']
+    return total <= MAX_EXPANDED
+
+
+
+def _candidate_snapshot(candidate, files):
+    """Pin all manifest entries and parent directories across hash/publication."""
+    directories = {''} | {str(parent) for name in files for parent in pathlib.PurePosixPath(name).parents if str(parent) != '.'}
+    result = {}
+    for name in directories | set(files):
+        info = protected(candidate / name, name in directories)
+        result[name] = (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_nlink,
+                        info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    return result
+
+
+def _promotion_path(state, product):
+    return pathlib.Path(state) / 'tools' / (product + '.promotion.json')
+
+
+def _receipt_hash(file):
+    if file.is_symlink():
+        raise GuardError('unowned-native-receipt')
+    if not file.exists():
+        return None
+    protected(file)
+    return digest(file)
+
+
+def _resume_promotion(product, home, state, system, inventory, *, command=None, dry_run=False):
+    """Resolve one recorded promotion before another discovery or download.
+
+    The caller holds the kit writer. A local metadata intent never permits
+    adopting an arbitrary directory: both identity and the whole manifest must
+    match the already verified candidate. Unknown outcomes remain queued.
+    """
+    pending_file = _promotion_path(state, product)
+    if not pending_file.exists() and not pending_file.is_symlink():
+        return None
+    pending_id = file_identity(pending_file)
+    if os.name != 'nt' and protected(pending_file).st_mode & 0o077:
+        raise GuardError('unprotected-native-promotion')
+    pending = read_json(pending_file)
+    if (not isinstance(pending, dict) or set(pending) != {'format', 'system', 'stage', 'stageID', 'candidateID', 'beforeLauncher', 'beforeReceiptHash', 'receipt'}
+            or pending['format'] != PROMOTION_FORMAT or pending['system'] != system):
+        raise GuardError('native-promotion-intent-unverified')
+    receipt = pending['receipt']; root = state / 'native' / product
+    launcher = launcher_path(product, home, system); receipt_file = state / 'tools' / (product + '.json')
+    if command and pathlib.Path(command).absolute() != launcher.absolute():
+        raise GuardError('native-promotion-selection-changed')
+    required = {'format', 'product', 'version', 'launcher', 'release', 'entry', 'arguments', 'files', 'artifactSha256', 'integrity'}
+    if not isinstance(receipt, dict) or not required <= set(receipt) or set(receipt) - required - {'retirement', 'launcherSha256'}:
+        raise GuardError('native-promotion-receipt-unverified')
+    version_key(product, receipt['version'])
+    destination = root / receipt['version']; stage = pathlib.Path(pending['stage'])
+    if (receipt['format'] != FORMAT or receipt['product'] != product or receipt['release'] != str(destination)
+            or receipt['launcher'] != str(launcher) or not _manifest_valid(receipt['files'])
+            or receipt['entry'] not in receipt['files'] or not isinstance(receipt['arguments'], list)
+            or any(a not in receipt['files'] for a in receipt['arguments'])
+            or not re.fullmatch(r'[a-f0-9]{64}', receipt['artifactSha256'])
+            or receipt['integrity'] not in ('publisher-sha256', 'official-https-sha256-readback')
+            or stage.parent != root or not re.fullmatch(r'\.prepare-[A-Za-z0-9_-]{6,64}', stage.name)):
+        raise GuardError('native-promotion-receipt-unverified')
+    for key in ('stageID', 'candidateID'):
+        if not isinstance(pending[key], list) or len(pending[key]) != 4 or any(type(v) is not int or v < 0 for v in pending[key]):
+            raise GuardError('native-promotion-identity-unverified')
+    previous = pending['beforeReceiptHash']
+    if previous is not None and (not isinstance(previous, str) or not re.fullmatch(r'[a-f0-9]{64}', previous)):
+        raise GuardError('native-promotion-receipt-unverified')
+    old = receipt.get('retirement')
+    if old is not None:
+        if (not isinstance(old, dict) or set(old) != {'release', 'files'} or not _manifest_valid(old['files'])
+                or pathlib.Path(old['release']).parent != root or old['release'] == str(destination) or previous is None):
+            raise GuardError('native-promotion-retirement-unverified')
+        version_key(product, pathlib.Path(old['release']).name)
+    elif previous is not None:
+        raise GuardError('native-promotion-retirement-unverified')
+    text = _launcher_content(receipt, system)
+    expected_hash = hashlib.sha256(text.encode()).hexdigest() if text is not None else None
+    if receipt.get('launcherSha256') != expected_hash:
+        raise GuardError('native-promotion-pointer-unverified')
+    protected(root, True); protected(launcher.parent, True)
+    current_hash = _receipt_hash(receipt_file)
+    complete_receipt = read_json(receipt_file) == receipt if current_hash is not None else False
+    if not complete_receipt and current_hash != previous:
+        raise GuardError('native-promotion-receipt-changed')
+    before_pointer = _launcher_snapshot(launcher) == pending['beforeLauncher']
+    after_pointer = _launcher_matches(launcher, receipt, system)
+    if not (before_pointer or after_pointer) or complete_receipt and not after_pointer:
+        raise GuardError('native-promotion-launcher-changed')
+    temporary_pointer = launcher.with_name('.' + launcher.name + '.prepare')
+    if temporary_pointer.exists() or temporary_pointer.is_symlink():
+        if not _launcher_matches(temporary_pointer, receipt, system):
+            raise GuardError('native-promotion-pointer-stage-changed')
+    if stage.exists() or stage.is_symlink():
+        if _directory_binding(stage) != pending['stageID'] or any(p.name not in ('download', 'release') for p in stage.iterdir()):
+            raise GuardError('native-promotion-stage-changed')
+        archive = stage / 'download'
+        if archive.exists() or archive.is_symlink():
+            if protected(archive).st_size > MAX_DOWNLOAD or digest(archive) != receipt['artifactSha256']:
+                raise GuardError('native-promotion-stage-changed')
+    prepared = stage / 'release'
+    candidate = destination if destination.exists() or destination.is_symlink() else prepared
+    candidate_snapshot = None
+    if candidate.exists() or candidate.is_symlink():
+        candidate_snapshot = _candidate_snapshot(candidate, receipt['files'])
+        if (_directory_binding(candidate) != pending['candidateID'] or not tree_matches(candidate, receipt['files'])
+                or candidate_snapshot != _candidate_snapshot(candidate, receipt['files'])
+                or candidate == destination and (prepared.exists() or prepared.is_symlink())):
+            raise GuardError('native-promotion-candidate-changed')
+    elif after_pointer or complete_receipt or temporary_pointer.exists() or temporary_pointer.is_symlink():
+        raise GuardError('native-promotion-outcome-unverified')
+    if dry_run or not idle(product, root, inventory()):
+        raise GuardError('native-promotion-active-or-unknown')
+    # No state changes until every pending component and the original selection
+    # are verified. Repeat the pointer/receipt fences after potentially costly
+    # manifest hashing, immediately before each publication.
+    def fence():
+        if file_identity(pending_file) != pending_id or _receipt_hash(receipt_file) != current_hash:
+            raise GuardError('native-promotion-state-changed')
+        if _launcher_snapshot(launcher) != pointer_snapshot:
+            raise GuardError('native-promotion-launcher-changed')
+        if candidate_snapshot is not None and _candidate_snapshot(candidate, receipt['files']) != candidate_snapshot:
+            raise GuardError('native-promotion-candidate-changed')
+    pointer_snapshot = _launcher_snapshot(launcher)
+    fence()
+    if candidate == prepared and candidate.exists():
+        if destination.exists() or destination.is_symlink():
+            raise GuardError('native-promotion-destination-changed')
+        os.replace(prepared, destination)
+        candidate = destination
+        # Renaming the directory may change only that directory's ctime.
+        moved = _candidate_snapshot(candidate, receipt['files'])
+        if (moved.keys() != candidate_snapshot.keys()
+                or any(moved[name] != prior for name, prior in candidate_snapshot.items() if name)
+                or moved[''][:7] != candidate_snapshot[''][:7]):
+            raise GuardError('native-promotion-candidate-changed')
+        candidate_snapshot = moved
+    if destination.exists():
+        if not after_pointer:
+            if not idle(product, root, inventory()):
+                raise GuardError('native-promotion-active-or-unknown')
+            fence()
+            if not temporary_pointer.exists() and not temporary_pointer.is_symlink():
+                if text is None:
+                    temporary_pointer.symlink_to(destination / receipt['entry'])
+                else:
+                    with temporary_pointer.open('xb') as output:
+                        output.write(text.encode()); output.flush(); os.fsync(output.fileno())
+                    temporary_pointer.chmod(0o644 if system == 'Windows' else 0o755)
+            if not _launcher_matches(temporary_pointer, receipt, system):
+                raise GuardError('native-promotion-pointer-stage-changed')
+            fence(); os.replace(temporary_pointer, launcher)
+            pointer_snapshot = _launcher_snapshot(launcher)
+        fence()
+        if not complete_receipt:
+            atomic_json(receipt_file, receipt, durable=True)
+            current_hash = _receipt_hash(receipt_file)
+        outcome = dict(tool=product, status='updated' if old else 'installed', installed=True,
+                       version=receipt['version'], integrity=receipt['integrity'], recoveredPromotion=True)
+    else:
+        outcome = dict(tool=product, status='queued', installed=False, reason='native-promotion-aborted-before-publication')
+    fence()
+    if temporary_pointer.exists() or temporary_pointer.is_symlink():
+        if not _launcher_matches(temporary_pointer, receipt, system):
+            raise GuardError('native-promotion-pointer-stage-changed')
+        temporary_pointer.unlink()
+    if stage.exists():
+        if _directory_binding(stage) != pending['stageID'] or any(p.name not in ('download',) for p in stage.iterdir()):
+            raise GuardError('native-promotion-stage-changed')
+        archive = stage / 'download'
+        if archive.exists():
+            before_archive = file_identity(archive)
+            if digest(archive) != receipt['artifactSha256'] or file_identity(archive) != before_archive:
+                raise GuardError('native-promotion-stage-changed')
+            archive.unlink()
+        stage.rmdir()
+    fence(); pending_file.unlink()
+    return outcome
+
+
 def reconcile(product, *, home, state, command=None, install_missing=False, dry_run=False,
               system=None, architecture=None, fetch=fetch_text, transfer=download, runner=run,
               processes=None, inventory=None):
@@ -336,15 +571,24 @@ def reconcile(product, *, home, state, command=None, install_missing=False, dry_
     system = system or platform.system(); home, state = pathlib.Path(home), pathlib.Path(state)
     result = {'tool': product, 'installed': False}
     try:
+        if inventory is None:
+            from ..cache import process_inventory
+            inventory = process_inventory
+        recovered = _resume_promotion(product, home, state, system, inventory, command=command, dry_run=dry_run)
+        if recovered is not None:
+            return recovered
         current = installed_receipt(product, home, state, command, system)
+        receipt_file = state / 'tools' / (product + '.json')
+        receipt_before_hash = _receipt_hash(receipt_file)
+        if current is not None and read_json(receipt_file) != current:
+            raise GuardError('native-receipt-changed')
+        if current is None and receipt_before_hash is not None:
+            return dict(result, status='unmanaged-installation-preserved')
         launcher = launcher_path(product, home, system)
         if not current and (command or launcher.exists() or launcher.is_symlink()):
             return dict(result, status='unmanaged-installation-preserved')
         if not current and not install_missing:
             return dict(result, status='not-installed')
-        if inventory is None:
-            from ..cache import process_inventory
-            inventory = process_inventory
         native_root = state / 'native' / product
         if current and current.get('retirement'):
             old = current['retirement']; old_root = pathlib.Path(old['release'])
@@ -352,7 +596,13 @@ def reconcile(product, *, home, state, command=None, install_missing=False, dry_
                 return dict(result, status='queued-native-retirement', version=current['version'])
             version_key(product, old_root.name)
             retire(old_root, old['files']); current.pop('retirement')
-            atomic_json(state / 'tools' / (product + '.json'), current)
+            atomic_json(receipt_file, current)
+            # Retirement is our own completed receipt mutation. Carry its new
+            # fence into a same-pass newer release instead of treating it as
+            # an external change after downloading the next candidate.
+            receipt_before_hash = _receipt_hash(receipt_file)
+            if read_json(receipt_file) != current:
+                raise GuardError('native-receipt-changed')
         metadata = discover(product, system, architecture, fetch)
         before = current['version'] if current else None
         if current and version_key(product, before) >= version_key(product, metadata['version']):
@@ -368,12 +618,14 @@ def reconcile(product, *, home, state, command=None, install_missing=False, dry_
         private_directory(native_root); private_directory(launcher.parent)
         if current and not tree_matches(pathlib.Path(current['release']), current['files']):
             return dict(result, status='custom-native-files-preserved')
-        launcher_before = ('symlink', os.readlink(launcher)) if launcher.is_symlink() else ('file', digest(launcher)) if launcher.exists() else None
+        launcher_before = _launcher_snapshot(launcher)
         destination = native_root / metadata['version']
         if destination.exists() or destination.is_symlink():
             return dict(result, status='unrecognized-native-release-preserved')
-        with tempfile.TemporaryDirectory(prefix='.prepare-', dir=native_root) as folder:
-            stage = pathlib.Path(folder); archive = stage / 'download'; prepared = stage / 'release'; prepared.mkdir()
+        stage = pathlib.Path(tempfile.mkdtemp(prefix='.prepare-', dir=native_root))
+        admitted = False; pending = None
+        try:
+            archive = stage / 'download'; prepared = stage / 'release'; prepared.mkdir()
             actual, size = transfer(product, metadata['url'], archive)
             if digest(archive) != actual or metadata['sha256'] and actual != metadata['sha256'] or metadata.get('size') and size != metadata['size']:
                 raise GuardError('native-artifact-checksum-mismatch')
@@ -401,42 +653,45 @@ def reconcile(product, *, home, state, command=None, install_missing=False, dry_
                     raise GuardError('prepared-native-content-changed')
             if not idle(product, native_root, inventory()):
                 return dict(result, status='queued-active-or-unknown-processes')
-            observed = ('symlink', os.readlink(launcher)) if launcher.is_symlink() else ('file', digest(launcher)) if launcher.exists() else None
-            if observed != launcher_before:
+            observed = _launcher_snapshot(launcher)
+            if observed != launcher_before or _receipt_hash(receipt_file) != receipt_before_hash:
                 raise GuardError('native-launcher-changed')
-            # Cursor's bundled node is launched via a tiny owned wrapper; no
-            # shared `agent` alias or vendor updater/startup hook is modified.
-            wrapper = None
-            if arguments:
-                if system == 'Windows':
-                    wrapper = '@"' + str(destination / entry) + '" "' + str(destination / arguments[0]) + '" %*\n'
-                else:
-                    wrapper = '#!/bin/sh\nexec ' + _shell_quote(str(destination / entry)) + ' ' + _shell_quote(str(destination / arguments[0])) + ' "$@"\n'
-            if system == 'Windows' and any(c in str(destination) for c in '%!\"\r\n'):
-                raise GuardError('unsafe-native-wrapper-path')
-            os.replace(prepared, destination)
-            if system == 'Windows':
-                text = wrapper or '@"' + str(destination / entry) + '" %*\n'
-                if any(c in str(destination) for c in '%!"\r\n'):
-                    raise GuardError('unsafe-native-wrapper-path')
-                atomic_text(launcher, text)
-            elif wrapper:
-                # One checked wrapper is the current pointer, never an app.
-                atomic_text(launcher, wrapper); launcher.chmod(0o755)
-            else:
-                temporary = launcher.with_name('.' + launcher.name + '.prepare')
-                if temporary.exists() or temporary.is_symlink():
-                    raise GuardError('native-pointer-stage-busy')
-                try:
-                    temporary.symlink_to(destination / entry); os.replace(temporary, launcher)
-                finally:
-                    temporary.unlink(missing_ok=True)
             receipt = {'format': FORMAT, 'product': product, 'version': metadata['version'], 'launcher': str(launcher), 'release': str(destination), 'entry': entry, 'arguments': arguments, 'files': files, 'artifactSha256': actual, 'integrity': metadata['integrity']}
-            if system == 'Windows' or wrapper:
-                receipt['launcherSha256'] = digest(launcher)
+            text = _launcher_content(receipt, system)
+            if text is not None:
+                receipt['launcherSha256'] = hashlib.sha256(text.encode()).hexdigest()
             if current:
                 receipt['retirement'] = {'release': current['release'], 'files': current['files']}
-            atomic_json(state / 'tools' / (product + '.json'), receipt)
+            temporary_pointer = launcher.with_name('.' + launcher.name + '.prepare')
+            if temporary_pointer.exists() or temporary_pointer.is_symlink():
+                raise GuardError('native-pointer-stage-busy')
+            pending = {'format': PROMOTION_FORMAT, 'system': system, 'stage': str(stage),
+                       'stageID': _directory_binding(stage), 'candidateID': _directory_binding(prepared),
+                       'beforeLauncher': launcher_before,
+                       'beforeReceiptHash': receipt_before_hash,
+                       'receipt': receipt}
+            # This protected, durable intent precedes both directory and pointer
+            # publication. A crash never makes the verified candidate unowned.
+            if len((json.dumps(pending, indent=2, ensure_ascii=False) + '\n').encode()) > 8 * 1024**2:
+                raise GuardError('native-promotion-metadata-budget')
+            atomic_json(_promotion_path(state, product), pending, durable=True)
+            admitted = True
+            promoted = _resume_promotion(product, home, state, system, inventory, command=command)
+            if promoted is None or promoted['status'] not in ('installed', 'updated'):
+                return promoted or dict(result, status='queued', reason='native-promotion-outcome-unverified')
+        finally:
+            # Before admission this is ordinary disposable preparation. Once
+            # the durable intent owns it, only _resume_promotion may retire it;
+            # late busy/error outcomes keep the verified download for recovery.
+            # Atomic publication can report an error after replacing its file,
+            # so consult the exact intent before unwinding that failure too.
+            if not admitted and pending is not None:
+                try:
+                    admitted = read_json(_promotion_path(state, product)) == pending
+                except (GuardError, OSError, ValueError, TypeError):
+                    admitted = True  # Unknown publication outcome stays queued.
+            if not admitted:
+                shutil.rmtree(stage)
         if current and idle(product, pathlib.Path(current['release']), inventory()):
             retire(pathlib.Path(current['release']), current['files']); receipt.pop('retirement'); atomic_json(state / 'tools' / (product + '.json'), receipt)
         return dict(result, status='updated' if current else 'installed', before=before, version=metadata['version'], installed=True, integrity=metadata['integrity'])

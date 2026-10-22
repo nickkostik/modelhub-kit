@@ -80,6 +80,218 @@ class NativeProducts(unittest.TestCase):
         current = json.loads((self.state / 'tools/devin-cli.json').read_text())
         self.assertNotIn('retirement', current)
         self.assertEqual(len(list((self.state / 'native/devin-cli').iterdir())), 1)
+    def crash_promotion(self, phase, *, upgrade=False):
+        """Simulate process death, retaining native staging instead of unwinding it."""
+        if upgrade:
+            self.reconcile(install_missing=True)
+            self.version = '3000.1.1'; self.blob = bundle({'bin/devin': binary() + b'next'})
+        native_root = self.state / 'native/devin-cli'
+        destination = native_root / self.version
+        real_replace, real_json = os.replace, products.atomic_json
+        class ProcessDied(BaseException):
+            pass
+        def replace(source, target):
+            if ((Path(target) == destination and phase == 'before-directory')
+                    or (Path(target) == self.home / '.local/bin/devin' and phase == 'before-pointer')):
+                raise ProcessDied()
+            real_replace(source, target)
+            if phase == 'after-directory' and Path(target) == destination:
+                raise ProcessDied()
+            if phase == 'after-pointer' and Path(target) == self.home / '.local/bin/devin':
+                raise ProcessDied()
+        def write_json(file, value, **kwargs):
+            real_json(file, value, **kwargs)
+            if ((phase == 'after-receipt' and Path(file) == self.state / 'tools/devin-cli.json')
+                    or (phase == 'after-intent' and Path(file) == self.state / 'tools/devin-cli.promotion.json')):
+                raise ProcessDied()
+        with patch.object(products.os, 'replace', side_effect=replace), \
+                patch.object(products, 'atomic_json', side_effect=write_json):
+            with self.assertRaises(ProcessDied):
+                self.reconcile(install_missing=True)
+        self.assertTrue((self.state / 'tools/devin-cli.promotion.json').is_file())
+        return destination
+
+    def recover_without_network(self, **kwargs):
+        def forbidden(*args, **options):
+            self.fail('Pending promotion attempted discovery, download or executable launch')
+        return self.reconcile(fetch=forbidden, transfer=forbidden, runner=forbidden, **kwargs)
+
+    def test_recorded_promotion_recovers_each_publication_crash_without_reinstall(self):
+        for phase in ('after-intent', 'before-directory', 'after-directory', 'before-pointer', 'after-pointer', 'after-receipt'):
+            with self.subTest(phase=phase):
+                # Isolate each transaction without copying any installed state.
+                self.home = Path(self.tmp.name) / phase; self.home.mkdir()
+                self.state = self.home / 'state'; self.state.mkdir()
+                before = self.transfers
+                destination = self.crash_promotion(phase)
+                result = self.recover_without_network()
+                self.assertEqual(result['status'], 'installed', result)
+                self.assertTrue(result['recoveredPromotion'])
+                self.assertEqual(self.transfers, before + 1)
+                self.assertEqual((self.home / '.local/bin/devin').resolve(), destination / 'bin/devin')
+                self.assertIsNotNone(products.installed_receipt('devin-cli', self.home, self.state))
+                self.assertFalse((self.state / 'tools/devin-cli.promotion.json').exists())
+                self.assertEqual(list((self.state / 'native/devin-cli').iterdir()), [destination])
+
+    def test_recovery_preserves_busy_unknown_and_dry_run_transaction(self):
+        destination = self.crash_promotion('after-directory')
+        pending = self.state / 'tools/devin-cli.promotion.json'; original = pending.read_bytes()
+        for options in ({'inventory': lambda: None}, {'inventory': lambda: [str(destination / 'bin/devin')]}, {'dry_run': True}):
+            with self.subTest(options=list(options)):
+                result = self.recover_without_network(**options)
+                self.assertEqual(result['status'], 'queued')
+                self.assertEqual(pending.read_bytes(), original)
+                self.assertTrue(destination.exists())
+                self.assertFalse((self.home / '.local/bin/devin').exists())
+        self.assertEqual(self.recover_without_network()['status'], 'installed')
+
+    def test_recovery_preserves_changed_candidate_and_unrelated_launcher(self):
+        destination = self.crash_promotion('after-directory')
+        binary_file = destination / 'bin/devin'; original = binary_file.read_bytes()
+        binary_file.write_bytes(original + b'custom')
+        self.assertEqual(self.recover_without_network()['reason'], 'native-promotion-candidate-changed')
+        self.assertEqual(binary_file.read_bytes(), original + b'custom')
+        binary_file.write_bytes(original)
+        launcher = self.home / '.local/bin/devin'; launcher.write_text('custom launcher')
+        self.assertEqual(self.recover_without_network()['reason'], 'native-promotion-launcher-changed')
+        self.assertEqual(launcher.read_text(), 'custom launcher')
+        self.assertTrue((self.state / 'tools/devin-cli.promotion.json').exists())
+
+    def test_recovery_rejects_same_content_replacement_and_unknown_stage_files(self):
+        destination = self.crash_promotion('after-directory')
+        pending_file = self.state / 'tools/devin-cli.promotion.json'
+        pending = json.loads(pending_file.read_text()); stage = Path(pending['stage'])
+        extra = stage / 'custom.txt'; extra.write_text('keep')
+        self.assertEqual(self.recover_without_network()['reason'], 'native-promotion-stage-changed')
+        self.assertEqual(extra.read_text(), 'keep'); extra.unlink()
+        renamed = destination.with_name('unrelated-kept'); destination.rename(renamed)
+        (destination / 'bin').mkdir(parents=True)
+        replacement = destination / 'bin/devin'; replacement.write_bytes((renamed / 'bin/devin').read_bytes()); replacement.chmod(0o755)
+        self.assertEqual(self.recover_without_network()['reason'], 'native-promotion-candidate-changed')
+        self.assertTrue(renamed.exists()); self.assertTrue(replacement.exists()); self.assertTrue(pending_file.exists())
+
+    def test_recovered_upgrade_retains_bound_old_retirement_until_idle(self):
+        destination = self.crash_promotion('after-pointer', upgrade=True)
+        result = self.recover_without_network()
+        self.assertEqual(result['status'], 'updated', result)
+        receipt = products.installed_receipt('devin-cli', self.home, self.state)
+        old = Path(receipt['retirement']['release']); self.assertTrue(old.exists())
+        self.assertEqual(self.reconcile(inventory=lambda: None)['status'], 'queued-native-retirement')
+        self.assertEqual(self.reconcile()['status'], 'current')
+        self.assertFalse(old.exists()); self.assertTrue(destination.exists()); self.assertEqual(self.transfers, 2)
+
+    def test_late_candidate_change_prevents_pointer_publication(self):
+        destination = self.crash_promotion('after-directory')
+        file = destination / 'bin/devin'
+        def changed():
+            file.write_bytes(file.read_bytes() + b'caller edit')
+            return []
+        result = self.recover_without_network(inventory=changed)
+        self.assertEqual(result['reason'], 'native-promotion-candidate-changed', result)
+        self.assertFalse((self.home / '.local/bin/devin').exists())
+        self.assertTrue((self.state / 'tools/devin-cli.promotion.json').exists())
+
+    def test_ordinary_receipt_write_failure_keeps_recorded_staging_for_recovery(self):
+        original = products.atomic_json
+        def failed_receipt(file, value, **options):
+            if Path(file) == self.state / 'tools/devin-cli.json':
+                raise OSError('fixture publication failure')
+            return original(file, value, **options)
+        with patch.object(products, 'atomic_json', side_effect=failed_receipt):
+            self.assertEqual(self.reconcile(install_missing=True)['status'], 'metadata-or-artifact-unavailable')
+        self.assertEqual(self.recover_without_network()['status'], 'installed')
+        self.assertEqual(self.transfers, 1)
+
+    def test_pending_upgrade_preserves_changed_previous_receipt(self):
+        destination = self.crash_promotion('after-directory', upgrade=True)
+        receipt_file = self.state / 'tools/devin-cli.json'
+        value = json.loads(receipt_file.read_text()); value['callerNote'] = 'preserve'
+        receipt_file.write_text(json.dumps(value)); receipt_file.chmod(0o600)
+        result = self.recover_without_network()
+        self.assertEqual(result['reason'], 'native-promotion-receipt-changed', result)
+        self.assertEqual(json.loads(receipt_file.read_text())['callerNote'], 'preserve')
+        self.assertTrue(destination.exists())
+        self.assertTrue((self.state / 'tools/devin-cli.promotion.json').exists())
+
+    def test_windows_wrapper_receipt_interruption_recovers_without_download(self):
+        self.blob = bundle({'bin/devin.exe': binary('Windows')}, zipped=True)
+        checksum = hashlib.sha256(self.blob).hexdigest()
+        def fetch(*args):
+            return json.dumps({'version': self.version, 'platforms': {'x86_64-pc-windows': {
+                'url': f'https://static.devin.ai/cli/{self.version}/devin-{self.version}-x86_64-pc-windows.zip',
+                'sha256': checksum}}})
+        options = dict(home=self.home, state=self.state, system='Windows', architecture='x64',
+                       inventory=lambda: [], fetch=fetch, transfer=self.transfer, runner=self.runner)
+        original = products.atomic_json
+        def failed_receipt(file, value, **kwargs):
+            if Path(file) == self.state / 'tools/devin-cli.json':
+                raise OSError('fixture interruption after wrapper publication')
+            return original(file, value, **kwargs)
+        def forbidden(*args, **kwargs):
+            self.fail('Recovery attempted a network request or executable launch')
+        with patch.dict(os.environ, {'LOCALAPPDATA': str(self.home / 'AppData/Local')}):
+            with patch.object(products, 'atomic_json', side_effect=failed_receipt):
+                self.assertEqual(products.reconcile('devin-cli', install_missing=True, **options)['status'], 'metadata-or-artifact-unavailable')
+            options.update(fetch=forbidden, transfer=forbidden, runner=forbidden)
+            result = products.reconcile('devin-cli', **options)
+            self.assertEqual(result['status'], 'installed', result)
+            self.assertTrue(result['recoveredPromotion'])
+            receipt = products.installed_receipt('devin-cli', self.home, self.state, system='Windows')
+            self.assertIsNotNone(receipt)
+            self.assertEqual(products.digest(Path(receipt['launcher'])), receipt['launcherSha256'])
+            self.assertEqual(self.transfers, 1)
+            self.assertFalse((self.state / 'tools/devin-cli.promotion.json').exists())
+
+    def test_late_busy_after_durable_intent_retains_candidate_without_redownload(self):
+        snapshots = iter([[], [], ['devin active']])
+        result = self.reconcile(install_missing=True, inventory=lambda: next(snapshots))
+        self.assertEqual(result['reason'], 'native-promotion-active-or-unknown', result)
+        pending_file = self.state / 'tools/devin-cli.promotion.json'
+        pending = json.loads(pending_file.read_text()); stage = Path(pending['stage'])
+        self.assertTrue((stage / 'release/bin/devin').is_file())
+        self.assertTrue((stage / 'download').is_file())
+        self.assertFalse(Path(pending['receipt']['release']).exists())
+        self.assertEqual(self.transfers, 1)
+        self.assertEqual(self.recover_without_network()['status'], 'installed')
+        self.assertFalse(stage.exists()); self.assertFalse(pending_file.exists())
+        self.assertEqual(self.transfers, 1)
+
+    def test_resolved_old_retirement_allows_newer_update_in_same_pass(self):
+        self.reconcile(install_missing=True)
+        old = products.installed_receipt('devin-cli', self.home, self.state)['release']
+        self.version = '3000.1.1'; self.blob = bundle({'bin/devin': binary() + b'second'})
+        snapshots = iter([[], [], [], [], [old + '/bin/devin']])
+        self.assertEqual(self.reconcile(inventory=lambda: next(snapshots))['status'], 'updated')
+        second = products.installed_receipt('devin-cli', self.home, self.state)
+        self.assertIn('retirement', second); self.assertTrue(Path(old).exists())
+        self.version = '3000.1.2'; self.blob = bundle({'bin/devin': binary() + b'third'})
+        result = self.reconcile()
+        self.assertEqual(result['status'], 'updated', result)
+        self.assertEqual(result['version'], self.version)
+        self.assertFalse(Path(old).exists()); self.assertFalse(Path(second['release']).exists())
+        self.assertEqual(self.transfers, 3)
+        self.assertEqual(len(list((self.state / 'native/devin-cli').iterdir())), 1)
+
+    def test_failed_intent_publication_removes_unadmitted_preparation(self):
+        original = products.atomic_json
+        def fail_intent(file, value, **options):
+            if Path(file) == self.state / 'tools/devin-cli.promotion.json':
+                raise OSError('fixture before intent publication')
+            return original(file, value, **options)
+        with patch.object(products, 'atomic_json', side_effect=fail_intent):
+            self.assertEqual(self.reconcile(install_missing=True)['status'], 'metadata-or-artifact-unavailable')
+        self.assertFalse((self.state / 'tools/devin-cli.promotion.json').exists())
+        self.assertEqual(list((self.state / 'native/devin-cli').iterdir()), [])
+        self.assertFalse((self.home / '.local/bin/devin').exists())
+
+    def test_unknown_pending_receipt_does_not_grant_a_sweep_or_download(self):
+        destination = self.crash_promotion('after-directory')
+        pending_file = self.state / 'tools/devin-cli.promotion.json'
+        pending = json.loads(pending_file.read_text()); pending['stage'] = str(self.home)
+        pending_file.write_text(json.dumps(pending)); pending_file.chmod(0o600)
+        self.assertEqual(self.recover_without_network()['reason'], 'native-promotion-receipt-unverified')
+        self.assertTrue(destination.exists()); self.assertTrue(pending_file.exists()); self.assertEqual(self.transfers, 1)
+
     def test_proven_newer_installation_is_settled_without_download(self):
         self.reconcile(install_missing=True)
         self.version = '2999.99.99'
@@ -91,7 +303,7 @@ class NativeProducts(unittest.TestCase):
         self.reconcile(install_missing=True)
         old=products.installed_receipt('devin-cli',self.home,self.state)['release']
         self.version='3000.1.1';self.blob=bundle({'bin/devin':binary()+b'next'})
-        snapshots=iter([[],[],[old+'/bin/devin']])
+        snapshots=iter([[],[],[],[],[old+'/bin/devin']])
         self.assertEqual(self.reconcile(inventory=lambda:next(snapshots))['status'],'updated')
         self.assertTrue(Path(old).exists())
         self.assertEqual(self.reconcile(inventory=lambda:None)['status'],'queued-native-retirement')

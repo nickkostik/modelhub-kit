@@ -44,6 +44,16 @@ checks. Unknown additions are preserved. A deferred retirement remains in the
 single receipt and blocks further replacements until resolved, avoiding a growing
 backup/version collection.
 
+A protected pending promotion records the verified candidate manifest, exact
+staging directory identity and previous launcher/receipt before publishing a
+version directory. The next update resolves that same transaction before any
+new discovery or download, including interruptions between pointer publication
+and the ownership receipt. Only the matching idle candidate can finish; active,
+unknown, replaced or modified files remain queued. A late busy state keeps the
+same recorded preparation for the next idle attempt. Its download staging is
+removed after verified completion, and the one pending record is then cleared.
+Legacy unrecorded installation directories are never adopted or swept.
+
 Devin and Muse provide publisher checksums. Cursor's CLI installer currently
 publishes an exact version-bound HTTPS URL without a publisher checksum. Its
 receipt therefore says `official-https-sha256-readback`: the kit verifies the
