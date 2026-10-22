@@ -204,6 +204,25 @@ def failed(result):
     return completion(result) == 'failed'
 
 
+def _failure_summary(category, status):
+    """Emit only fixed vocabulary, never exception text or command arguments."""
+    commands = {'init', 'doctor', 'update', 'sync', 'integrate', 'project', 'register-acp',
+                'export-acp', 'cache', 'maintain', 'fleet', 'schedule', 'uninstall'}
+    arguments = iter(sys.argv[1:])
+    command = 'unknown'
+    for argument in arguments:
+        if argument in ('--config', '--expected-os', '--expected-boot', '--operation-id'):
+            next(arguments, None)
+        elif not argument.startswith('-'):
+            command = argument if argument in commands else 'unknown'
+            break
+    if sys.stderr is not None:
+        try:
+            print('modelhub-kit command=' + command + ' category=' + category + ' status=' + status, file=sys.stderr)
+        except (OSError, ValueError):
+            pass  # Diagnostic delivery must not replace the operation's exit status.
+
+
 def cli():
     try:
         result = main()
@@ -212,12 +231,17 @@ def cli():
         # Plans and discovery have no pending application requirement.
         planned = isinstance(result, dict) and result.get('status') in {'planned', 'initialized', 'existing-config-preserved', 'exported'}
         readonly = isinstance(result, dict) and (result.get('readOnly') is True or result.get('apply') is False)
+        if state == 'failed':
+            _failure_summary('operation-failed', 'failed')
         sys.exit(1 if state == 'failed' else 75 if state == 'queued' and not (planned or readonly) else 0)
     except GuardError as error:
         print(json.dumps({**_operation_context(), 'status': 'queued' if str(error) == 'writer-busy' else 'refused', 'reason': str(error)}))
+        if str(error) != 'writer-busy':
+            _failure_summary('guard-refused', 'refused')
         sys.exit(75 if str(error) == 'writer-busy' else 78)
     except (OSError, ValueError, KeyError, TypeError):
         print(json.dumps({**_operation_context(), 'status': 'error', 'reason': 'operation-failed-current-settings-retained'}))
+        _failure_summary('operation-error', 'error')
         sys.exit(1)
 
 

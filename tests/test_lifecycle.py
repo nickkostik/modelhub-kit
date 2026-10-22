@@ -57,6 +57,7 @@ class LifecycleTests(unittest.TestCase):
             linux = schedule._linux([sys.executable, '-m', 'modelhub_kit', 'maintain'], state)
             text = linux['files'][linux['primary']].decode()
             self.assertIn('TimeoutStartSec=infinity', text)
+            self.assertIn('StandardOutput=null\nStandardError=journal\n', text)
             for value in ('CPUQuota=100%', 'MemoryHigh=2G', 'IOSchedulingClass=idle'):
                 self.assertIn(value, text)
             windows = schedule._windows(['python.exe', '-m', 'modelhub_kit', 'maintain'], state)

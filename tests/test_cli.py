@@ -1,6 +1,9 @@
+import contextlib
+import io
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -50,11 +53,87 @@ class CommandTests(unittest.TestCase):
 
     def test_cli_reports_deferred_apply_with_temporary_failure_exit(self):
         for result, expected in (({'status': 'queued'}, 75), ({'status': 'failed'}, 1),
-                                 ({'status': 'planned'}, 0), ({'status': 'over-budget', 'apply': False}, 0)):
-            with self.subTest(result=result), patch.object(cli, 'main', return_value=result), patch('builtins.print'):
+                                 ({'status': 'completed'}, 0), ({'status': 'planned'}, 0),
+                                 ({'status': 'over-budget', 'apply': False}, 0)):
+            output, diagnostic = io.StringIO(), io.StringIO()
+            with self.subTest(result=result), patch.object(cli, 'main', return_value=result), \
+                    patch.object(sys, 'argv', ['modelhub-kit', 'maintain']), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(diagnostic):
                 with self.assertRaises(SystemExit) as stopped:
                     cli.cli()
                 self.assertEqual(stopped.exception.code, expected)
+                self.assertEqual(json.loads(output.getvalue()), result)
+                self.assertEqual(diagnostic.getvalue(),
+                                 'modelhub-kit command=maintain category=operation-failed status=failed\n' if expected == 1 else '')
+
+    def test_cli_failure_summaries_never_copy_exception_or_result_data(self):
+        private = 'https://service.example.invalid/?token=fixture-private-value\n/fixture/private-config\n' * 1000
+        cases = [({'status': 'failed', 'reason': private}, None, 1, 'operation-failed status=failed'),
+                 (None, core.GuardError(private), 78, 'guard-refused status=refused'),
+                 (None, OSError(private), 1, 'operation-error status=error')]
+        for result, error, expected, summary in cases:
+            output, diagnostic = io.StringIO(), io.StringIO()
+            with self.subTest(summary=summary), patch.object(cli, 'main', return_value=result, side_effect=error), \
+                    patch.object(sys, 'argv', ['modelhub-kit', '--config', 'update', '--expected-boot', 'maintain', 'sync']), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(diagnostic):
+                with self.assertRaises(SystemExit) as stopped:
+                    cli.cli()
+            self.assertEqual(stopped.exception.code, expected)
+            self.assertEqual(diagnostic.getvalue(), 'modelhub-kit command=sync category=' + summary + '\n')
+            self.assertLess(len(diagnostic.getvalue()), 128)
+            if result is not None:
+                self.assertEqual(json.loads(output.getvalue()), result)
+            elif isinstance(error, core.GuardError):
+                self.assertEqual(json.loads(output.getvalue()), {'status': 'refused', 'reason': private})
+            else:
+                self.assertEqual(json.loads(output.getvalue()),
+                                 {'status': 'error', 'reason': 'operation-failed-current-settings-retained'})
+
+    def test_cli_writer_busy_remains_quiet_and_preserves_exit75(self):
+        output, diagnostic = io.StringIO(), io.StringIO()
+        with patch.object(cli, 'main', side_effect=core.GuardError('writer-busy')), \
+                patch.object(sys, 'argv', ['modelhub-kit', 'maintain']), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(diagnostic):
+            with self.assertRaises(SystemExit) as stopped:
+                cli.cli()
+        self.assertEqual(stopped.exception.code, 75)
+        self.assertEqual(json.loads(output.getvalue()), {'status': 'queued', 'reason': 'writer-busy'})
+        self.assertEqual(diagnostic.getvalue(), '')
+
+    def test_unavailable_diagnostic_stream_preserves_failure_exit(self):
+        diagnostic = io.StringIO()
+        diagnostic.close()
+        with patch.object(cli, 'main', side_effect=core.GuardError('fixture-refusal')), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(diagnostic):
+            with self.assertRaises(SystemExit) as stopped:
+                cli.cli()
+        self.assertEqual(stopped.exception.code, 78)
+
+    def test_real_cli_failures_remain_visible_with_stdout_discarded(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = pathlib.Path(temporary)
+            file = home / 'fixture-private-config.json'
+            environment = {'PATH': os.environ.get('PATH', ''), 'HOME': str(home), 'USERPROFILE': str(home),
+                           'LOCALAPPDATA': str(home / 'AppData/Local'), 'XDG_CONFIG_HOME': str(home / '.config'),
+                           'XDG_STATE_HOME': str(home / '.local/state'), 'MODELHUB_KIT_HOME': str(home / 'state')}
+            if 'SystemRoot' in os.environ:
+                environment['SystemRoot'] = os.environ['SystemRoot']
+            failed = core.default_config()
+            failed['tools'] = []
+            # Rejected before opening a socket; no live catalog or model calls.
+            failed['catalog_sources'] = [{'id': 'example', 'url': 'http://127.0.0.1:1/fixture-private-value'}]
+            cases = [('malformed', '{"fixture-private-value":', 1, 'operation-error status=error'),
+                     ('refused', json.dumps({'version': 0, 'fixture-private-value': 'sentinel'}), 78,
+                      'guard-refused status=refused'),
+                     ('failed-result', json.dumps(failed), 1, 'operation-failed status=failed')]
+            for name, contents, expected, summary in cases:
+                with self.subTest(case=name):
+                    core.atomic_text(file, contents)
+                    result = subprocess.run([sys.executable, '-B', '-m', 'modelhub_kit', '--config', str(file), 'maintain'],
+                                            cwd=pathlib.Path(__file__).resolve().parents[1], env=environment,
+                                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=10)
+                    self.assertEqual(result.returncode, expected)
+                    self.assertEqual(result.stderr, 'modelhub-kit command=maintain category=' + summary + '\n')
 
 
 if __name__ == '__main__':
