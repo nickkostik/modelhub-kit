@@ -251,3 +251,11 @@ No backups or retained removal logs are created. If an interruption leaves
 partial removal, its recovery receipt stays until the checked files have been
 unlinked; retry from the reviewed source command above. A queued result reports
 any already completed file removals and preserves the remaining unknown data.
+## Runtime ownership
+
+On Unix, runtime version checks require protected ownership of the Node/npm
+selection, its resolved target, and their parent directories. Root maintenance
+does not execute a runtime writable by another account. An unverified runtime
+queues work without reinstalling it or changing ownership. Use your operating
+system's package manager runtime, or a protected runtime owned by the account
+running maintenance.

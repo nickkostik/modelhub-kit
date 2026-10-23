@@ -56,6 +56,40 @@ def protected(path, directory=False):
     return info
 
 
+def protected_runtime_path(path):
+    """Validate Unix runtime custody before executing a version probe.
+
+    Package-manager symlinks are allowed only when both their selection paths
+    and resolved targets are owned by root or the current account. A root
+    maintenance process must never execute another user's writable runtime.
+    """
+    selected = pathlib.Path(path).absolute()
+    if os.name == 'nt':
+        return selected.resolve(strict=True)
+    owners = {0, os.geteuid()}
+    pending = [selected]
+    checked = set()
+    while pending:
+        candidate = pending.pop()
+        for item in (candidate, *candidate.parents):
+            if item in checked:
+                continue
+            checked.add(item)
+            info = item.lstat()
+            if info.st_uid not in owners:
+                raise GuardError('runtime-custody-unverified')
+            if stat.S_ISLNK(info.st_mode):
+                pending.append(item.resolve(strict=True))
+            elif info.st_mode & 0o022:
+                raise GuardError('runtime-custody-unverified')
+            elif item != selected and not stat.S_ISDIR(info.st_mode) and item != candidate:
+                raise GuardError('runtime-custody-unverified')
+    resolved = selected.resolve(strict=True)
+    if not stat.S_ISREG(resolved.stat().st_mode):
+        raise GuardError('runtime-custody-unverified')
+    return resolved
+
+
 def private_directory(path):
     path = pathlib.Path(path).absolute()
     missing = []

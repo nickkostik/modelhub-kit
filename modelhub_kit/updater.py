@@ -8,7 +8,7 @@ import sys
 import hashlib
 import platform
 import stat
-from .core import GuardError, atomic_json, atomic_text, http_json, locations, private_directory, protected, read_json, run, run_mutation
+from .core import GuardError, atomic_json, atomic_text, http_json, locations, private_directory, protected, protected_runtime_path, read_json, run, run_mutation
 
 SEMVER = re.compile(r'\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?')
 GROK_API_KEY_NAME = re.compile(r'(?:XAI|GROK|GROK_CODE|GROK_CODE_XAI)_API_KEY(?:_\d+)?|SUPER_GROK_PLAN')
@@ -131,19 +131,21 @@ def npm_command():
     npm, node = shutil.which('npm'), shutil.which('node')
     if not npm or not node:
         raise GuardError('node-and-npm-required')
+    # Validate before --version: even a metadata probe executes the runtime.
+    node = str(protected_runtime_path(node))
+    executable = protected_runtime_path(npm)
     node_version = run([node, '--version'], timeout=10)
     match = re.fullmatch(r'v(\d+)\.\d+\.\d+\s*', node_version['output'])
     if node_version['exit'] or not match or int(match[1]) < 22:
         raise GuardError('node22-or-newer-required')
-    executable = pathlib.Path(npm).resolve()
     candidates = [executable.parent / 'node_modules/npm/bin/npm-cli.js',
                   executable.parent.parent / 'lib/node_modules/npm/bin/npm-cli.js', executable]
     for candidate in candidates:
         if candidate.name == 'npm-cli.js' and candidate.is_file():
-            return [node, str(candidate)]
+            return [node, str(protected_runtime_path(candidate))]
     if os.name == 'nt':
         raise GuardError('native-npm-cli-layout-required')
-    return [npm]
+    return [str(executable)]
 
 
 def package_file(prefix, package):
