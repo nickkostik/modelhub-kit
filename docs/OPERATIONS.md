@@ -124,6 +124,21 @@ An unreadable cache subtree or a file disappearing during measurement queues
 cleanup with unknown byte counts. A partial scan never counts as within budget,
 and the kit leaves the remaining cache untouched until it can measure it.
 
+### Investigating retained installations
+
+Measure installed packages, native version directories and downloaded staging
+files separately from caches. An old directory name does not prove an unused
+installation: the selected launcher, a service or an active session may still
+refer to it. Preserve those references and personal data during cleanup.
+
+Bounded cleanup must advance through its backlog. When a separate root observer
+maintains user-owned releases, write its scheduling cursor as the enrolled user
+and restore the observer's identity before checking native locks. Do not change
+ownership of the user's installation to make a progress write succeed. The
+cursor schedules fresh checks; it never authorizes deletion. Keep it as one
+overwritten metadata file and verify that successive runs reach later entries.
+Budget deferrals alone are not evidence that a directory is unsafe or removed.
+
 For a desktop slowdown, identify the stalled process and its local resource
 controls before clearing caches. [Desktop indexing and memory pressure](DESKTOP-PRESSURE.md)
 describes optional KDE/Baloo checks and native exclusions for generated state.
