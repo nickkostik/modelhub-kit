@@ -58,6 +58,30 @@ settings available but does not turn a failed refresh into a successful one.
 Plans do not apply pending changes. Routine state is one overwritten receipt,
 with no appended execution log or versioned backups.
 
+### Installed source and a running model adapter
+
+The kit projects native provider configuration; it does not run an inference
+proxy. If you separately use a local protocol adapter, a successful source
+installation does not prove that its running process loaded that source.
+Check the adapter's authenticated local health metadata for the process ID,
+loaded source revision, handler checksum and configuration identity. Compare
+those with the reviewed installed files. A configured service command or a
+version on disk cannot establish the identity of an already running handler.
+
+A `501` transport error during compaction can occur before any provider request
+when that adapter's active catalog reader lacks the selected route's protocol.
+Check the route's declared transport and the loaded reader together. Keep
+working reasoning choices intact. Updating model limits, increasing output
+tokens or retrying the unchanged request does not repair a missing transport.
+Any adapter refresh must use its verified native handoff and preserve active
+streams; unsupported or unverified handoffs remain queued.
+
+For permission errors, check access as the adapter's actual service account.
+A valid user credential can be unreachable when a separate root-only default
+is tried first. Fix optional-path selection in the owning adapter while
+preserving errors from explicitly configured credentials. Keep system
+credentials private and do not copy them into shared configuration or reports.
+
 ## Client integration
 
 ```sh
