@@ -27,6 +27,11 @@ MARKER = 'modelhub-omp-standalone-v1'
 RECEIPT = 'modelhub-artifact.json'
 RETIREMENT = 'modelhub-retirement.json'
 MAX_BINARY = 512 * 1024 * 1024
+MAX_RETIREMENT_ENTRIES = 4096
+MAX_RETIREMENT_CHECKS = 8
+MAX_RETIREMENT_BYTES = MAX_BINARY
+MAX_RETIREMENT_SECONDS = 10
+MAX_RETIREMENT_PROBE_SECONDS = 2
 
 
 def stable_version(value):
@@ -228,11 +233,11 @@ def legacy_retirement_matches(binary):
         return False
 
 
-def active_binaries(root):
+def active_binaries(root, timeout=10):
     """Executable names only, never argument vectors or credentials."""
     try:
         output = subprocess.check_output(['ps', '-A', '-ww', '-o', 'pid=', '-o', 'comm='],
-                                         timeout=10, stderr=subprocess.DEVNULL)
+                                         timeout=timeout, stderr=subprocess.DEVNULL)
         if len(output) > 8 * 1024 * 1024:
             return None
         active = set()
@@ -250,37 +255,94 @@ def active_binaries(root):
         return None
 
 
+def retirement_candidates(root, current, deadline=None):
+    """Bound discovery before mutation; unrelated entries cannot consume work slots."""
+    candidates = []
+    current_version = tuple(map(int, current.parent.name.split('.')))
+    try:
+        with os.scandir(root) as entries:
+            for count, entry in enumerate(entries):
+                if count >= MAX_RETIREMENT_ENTRIES or deadline is not None and time.monotonic() >= deadline:
+                    return None
+                if not re.fullmatch(r'\d+\.\d+\.\d+', entry.name):
+                    continue
+                candidate_version = tuple(map(int, entry.name.split('.')))
+                if candidate_version < current_version:
+                    candidates.append((candidate_version, root / entry.name))
+    except OSError:
+        return None
+    return [folder for _, folder in sorted(candidates)]
+
+
 def retire_idle(root, current, legacy=None):
-    live = active_binaries(root)
+    deadline = time.monotonic() + MAX_RETIREMENT_SECONDS
+    def remaining():
+        return max(0, deadline - time.monotonic())
+    def inventory():
+        seconds = remaining()
+        return active_binaries(root, timeout=min(MAX_RETIREMENT_PROBE_SECONDS, seconds)) if seconds else None
+    live = inventory()
     if live is None:
-        return dict(retiredReleases=0, retirementDeferred=True)
+        reason = 'native-retirement-time-budget' if not remaining() else 'native-retirement-process-inventory-unavailable'
+        return dict(retiredReleases=0, retirementDeferred=True, retirementReason=reason)
+    candidates = retirement_candidates(root, current, deadline)
+    if candidates is None:
+        reason = 'native-retirement-time-budget' if not remaining() else 'native-retirement-enumeration-incomplete'
+        return dict(retiredReleases=0, retainedLiveReleases=0, retirementDeferred=True,
+                    retirementReason=reason)
     removed = 0
     retained = 0
-    for folder in list(root.iterdir())[:64]:
-        if folder == current.parent or not re.fullmatch(r'\d+\.\d+\.\d+', folder.name):
-            continue
-        if tuple(map(int, folder.name.split('.'))) >= tuple(map(int, current.parent.name.split('.'))):
-            continue
+    checks = 0
+    admitted_bytes = 0
+    def queued(reason):
+        return dict(retiredReleases=removed, retainedLiveReleases=retained, retirementDeferred=True,
+                    retirementReason=reason)
+    for folder in candidates:
+        if not remaining():
+            return queued('native-retirement-time-budget')
         binary = folder / 'omp'
         try:
             owned(folder, True)
             before = identity(owned(binary))
-            names = {p.name for p in folder.iterdir()}
+            names = set()
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    if entry.name not in {'omp', RECEIPT, RETIREMENT}:
+                        raise ValueError('unknown-omp-release-content-preserved')
+                    names.add(entry.name)
             proven = receipt_matches(folder / RECEIPT, binary) or legacy_retirement_matches(binary)
             if not proven and not (legacy and folder == legacy['path'].parent and before == legacy['identity']):
-                continue
-            if not names <= {'omp', RECEIPT, RETIREMENT}:
                 continue
             if str(binary) in live:
                 retained += 1
                 continue
-            fresh = active_binaries(root)
-            if fresh is None or str(binary) in fresh or identity(owned(binary)) != before:
+            if checks >= MAX_RETIREMENT_CHECKS:
+                return queued('native-retirement-release-budget')
+            # Receipt verification is a cheap, bounded stat/metadata comparison,
+            # not a repeated full-file hash. Bound the eligible binary bytes too
+            # before admitting fresh probes or any retirement filesystem work.
+            if before['size'] > MAX_RETIREMENT_BYTES - admitted_bytes:
+                return queued('native-retirement-byte-budget')
+            if not remaining():
+                return queued('native-retirement-time-budget')
+            admitted_bytes += before['size']
+            checks += 1
+            fresh = inventory()
+            if fresh is None:
+                retained += 1
+                reason = 'native-retirement-time-budget' if not remaining() else 'native-retirement-process-inventory-unavailable'
+                return queued(reason)
+            if not remaining():
+                return queued('native-retirement-time-budget')
+            live = fresh
+            if str(binary) in live or identity(owned(binary)) != before:
                 retained += 1
                 continue
             metadata = [folder / name for name in [RECEIPT, RETIREMENT] if name in names]
             for file in metadata:
                 owned(file)
+            if not remaining():
+                return queued('native-retirement-time-budget')
             binary.unlink()
             for file in metadata:
                 file.unlink()

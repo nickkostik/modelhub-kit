@@ -54,6 +54,20 @@ same recorded preparation for the next idle attempt. Its download staging is
 removed after verified completion, and the one pending record is then cleared.
 Legacy unrecorded installation directories are never adopted or swept.
 
+The standalone macOS OMP adapter discovers older versions before applying its
+retirement budget, so unrelated files, current/newer versions and live releases
+cannot permanently occupy the first cleanup slots. A listing with more than
+4,096 root entries queues before deletion. Each pass admits at most eight fresh
+retirement process checks and 512 MiB of eligible binaries, enough for one maximum
+supported native binary. A ten-second elapsed-time budget is checked during
+discovery and before each deletion, with process probes bounded to two seconds
+or the remaining time. Receipt checks compare protected metadata and exact file
+identity without repeatedly hashing entire binaries. Completed retirements stay
+completed; the remaining work continues next pass after live and unowned entries.
+Incomplete directory or process visibility queues the remaining work. Only exact
+owned receipts or the recorded former launcher authorize retirement; unknown
+content, modified binaries and shared files stay in place.
+
 Devin and Muse provide publisher checksums. Cursor's CLI installer currently
 publishes an exact version-bound HTTPS URL without a publisher checksum. Its
 receipt therefore says `official-https-sha256-readback`: the kit verifies the
