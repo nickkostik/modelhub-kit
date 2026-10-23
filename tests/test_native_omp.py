@@ -14,9 +14,13 @@ class OmpRetention(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name) / 'releases'
-        self.root.mkdir()
+        self.home = Path(self.tmp.name) / 'home'
+        self.root = self.home / '.local/share/modelhub-omp-releases'
+        self.root.mkdir(parents=True)
         self.current = self.release('9.0.0')
+        self.launcher = self.home / '.local/bin/omp'
+        self.launcher.parent.mkdir()
+        self.launcher.symlink_to(self.current)
 
     def release(self, version):
         folder = self.root / version
@@ -32,7 +36,7 @@ class OmpRetention(unittest.TestCase):
 
     def retire(self, live=()):
         with patch.object(omp, 'active_binaries', return_value=set(live)):
-            return omp.retire_idle(self.root, self.current)
+            return omp.retire_idle(self.root, self.current, launcher=self.launcher)
 
     def test_unrelated_entries_do_not_starve_owned_old_releases(self):
         for number in range(65):
@@ -122,7 +126,7 @@ class OmpRetention(unittest.TestCase):
     def test_fresh_inventory_failure_stops_pass_instead_of_repeated_probes(self):
         old = [self.release(version) for version in ('1.0.0', '2.0.0', '3.0.0')]
         with patch.object(omp, 'active_binaries', side_effect=[set(), None]) as inventory:
-            result = omp.retire_idle(self.root, self.current)
+            result = omp.retire_idle(self.root, self.current, launcher=self.launcher)
         self.assertEqual(inventory.call_count, 2)
         self.assertEqual(result['retiredReleases'], 0)
         self.assertEqual(result['retirementReason'], 'native-retirement-process-inventory-unavailable')
@@ -136,7 +140,7 @@ class OmpRetention(unittest.TestCase):
             return {str(binary) for binary in old[:len(calls) - 1]}
         with patch.object(omp, 'MAX_RETIREMENT_CHECKS', 2), \
                 patch.object(omp, 'active_binaries', side_effect=inventory):
-            result = omp.retire_idle(self.root, self.current)
+            result = omp.retire_idle(self.root, self.current, launcher=self.launcher)
         self.assertEqual(len(calls), 3)
         self.assertEqual(result['retiredReleases'], 0)
         self.assertTrue(result['retirementDeferred'])
@@ -151,7 +155,7 @@ class OmpRetention(unittest.TestCase):
         os.link(linked, self.root / 'shared-runtime')
         active = self.release('4.0.0')
         with patch.object(omp, 'active_binaries', side_effect=[set(), {str(active)}]):
-            result = omp.retire_idle(self.root, self.current)
+            result = omp.retire_idle(self.root, self.current, launcher=self.launcher)
         self.assertEqual(result['retiredReleases'], 0)
         self.assertEqual(result['retainedLiveReleases'], 1)
         self.assertTrue(all(binary.exists() for binary in (modified, unknown, linked, active)))
@@ -160,7 +164,7 @@ class OmpRetention(unittest.TestCase):
     def test_default_pass_retires_at_most_eight_and_next_pass_continues(self):
         old = [self.release('1.0.' + str(number)) for number in range(9)]
         with patch.object(omp, 'active_binaries', return_value=set()) as inventory:
-            first = omp.retire_idle(self.root, self.current)
+            first = omp.retire_idle(self.root, self.current, launcher=self.launcher)
         self.assertEqual(first['retiredReleases'], 8)
         self.assertEqual(inventory.call_count, 9)  # Initial view plus eight fresh checks.
         self.assertEqual(first['retirementReason'], 'native-retirement-release-budget')
@@ -180,13 +184,13 @@ class OmpRetention(unittest.TestCase):
         with patch.object(omp, 'MAX_RETIREMENT_BYTES', full_binary_size), \
                 patch.object(omp, 'digest', side_effect=AssertionError('Retirement must not hash binaries')), \
                 patch.object(omp, 'active_binaries', return_value={str(live)}) as inventory:
-            first = omp.retire_idle(self.root, self.current)
+            first = omp.retire_idle(self.root, self.current, launcher=self.launcher)
             self.assertEqual(inventory.call_count, 2)
             self.assertEqual(first['retiredReleases'], 1)
             self.assertEqual(first['retirementReason'], 'native-retirement-byte-budget')
             self.assertFalse(old[0].exists())
             self.assertTrue(old[1].exists())
-            second = omp.retire_idle(self.root, self.current)
+            second = omp.retire_idle(self.root, self.current, launcher=self.launcher)
         self.assertEqual(second['retiredReleases'], 1)
         self.assertFalse(second['retirementDeferred'])
         self.assertTrue(live.exists())
@@ -202,7 +206,7 @@ class OmpRetention(unittest.TestCase):
             return set()
         with patch.object(omp.time, 'monotonic', side_effect=lambda: clock[0]), \
                 patch.object(omp, 'active_binaries', side_effect=inventory):
-            result = omp.retire_idle(self.root, self.current)
+            result = omp.retire_idle(self.root, self.current, launcher=self.launcher)
         self.assertEqual(timeouts, [2, 1.25])
         self.assertEqual(result['retiredReleases'], 0)
         self.assertEqual(result['retirementReason'], 'native-retirement-time-budget')
@@ -218,7 +222,7 @@ class OmpRetention(unittest.TestCase):
             return set()
         with patch.object(omp.time, 'monotonic', side_effect=lambda: clock[0]), \
                 patch.object(omp, 'active_binaries', side_effect=inventory):
-            result = omp.retire_idle(self.root, self.current)
+            result = omp.retire_idle(self.root, self.current, launcher=self.launcher)
         self.assertEqual(len(calls), 3)
         self.assertEqual(result['retiredReleases'], 1)
         self.assertEqual(result['retirementReason'], 'native-retirement-time-budget')
@@ -238,10 +242,62 @@ class OmpRetention(unittest.TestCase):
         with patch.object(omp.time, 'monotonic', side_effect=lambda: clock[0]), \
                 patch.object(omp, 'receipt_matches', side_effect=slow_metadata), \
                 patch.object(omp, 'active_binaries', return_value=set()) as inventory:
-            result = omp.retire_idle(self.root, self.current)
+            result = omp.retire_idle(self.root, self.current, launcher=self.launcher)
         self.assertEqual(inventory.call_count, 1)
         self.assertEqual(result['retirementReason'], 'native-retirement-time-budget')
         self.assertTrue(old.exists())
+
+    def test_launcher_reselected_during_fresh_inventory_preserves_selected_binary(self):
+        old = self.release('1.0.0')
+        calls = []
+        def inventory(_root, **_kwargs):
+            calls.append(None)
+            if len(calls) == 2:
+                self.launcher.unlink()
+                self.launcher.symlink_to(old)
+            return set()
+        with patch.object(omp, 'active_binaries', side_effect=inventory):
+            result = omp.retire_idle(self.root, self.current, launcher=self.launcher)
+        self.assertTrue(old.exists(), 'The newly selected version must remain usable')
+        self.assertEqual(self.launcher.resolve(), old)
+        self.assertEqual(result['retiredReleases'], 0)
+        self.assertEqual(result['retirementReason'], 'native-retirement-launcher-changed')
+
+    def test_launcher_reselected_after_process_check_preserves_binary_and_receipt(self):
+        old = self.release('1.0.0')
+        receipt = old.parent / omp.RECEIPT
+        original_owned = omp.owned
+        checks = []
+        def owned(path, directory=False):
+            if path == receipt:
+                checks.append(None)
+                if len(checks) == 2:  # Final metadata check after fresh process visibility.
+                    self.launcher.unlink()
+                    self.launcher.symlink_to(old)
+            return original_owned(path, directory)
+        with patch.object(omp, 'owned', side_effect=owned):
+            result = self.retire()
+        self.assertEqual(len(checks), 2)
+        self.assertTrue(old.exists())
+        self.assertTrue(receipt.exists())
+        self.assertEqual(self.launcher.resolve(), old)
+        self.assertEqual(result['retiredReleases'], 0)
+        self.assertEqual(result['retirementReason'], 'native-retirement-launcher-changed')
+
+    def test_missing_or_unrecognized_selection_queues_before_process_probes(self):
+        old = self.release('1.0.0')
+        for target in (None, old, self.home / 'custom-omp'):
+            with self.subTest(target=target):
+                if self.launcher.is_symlink():
+                    self.launcher.unlink()
+                if target is not None:
+                    self.launcher.symlink_to(target)
+                with patch.object(omp, 'active_binaries', side_effect=AssertionError('No selection proof')):
+                    result = omp.retire_idle(self.root, self.current, launcher=self.launcher)
+                self.assertTrue(old.exists())
+                self.assertTrue(self.current.exists())
+                self.assertEqual(result['retiredReleases'], 0)
+                self.assertEqual(result['retirementReason'], 'native-retirement-launcher-unavailable')
 
 
 if __name__ == '__main__':

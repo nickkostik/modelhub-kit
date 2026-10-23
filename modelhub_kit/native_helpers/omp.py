@@ -274,8 +274,36 @@ def retirement_candidates(root, current, deadline=None):
     return [folder for _, folder in sorted(candidates)]
 
 
-def retire_idle(root, current, legacy=None):
+def selected_launcher(root, current, launcher):
+    """Bind the actual owned selection, not only the caller's captured version."""
+    try:
+        if launcher is None or current.parent.parent != root:
+            return None
+        launcher = pathlib.Path(launcher)
+        if not launcher.is_absolute():
+            return None
+        owned(root, True)
+        owned(launcher.parent, True)
+        info = launcher.lstat()
+        if not stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+            return None
+        before = identity(info)
+        if pathlib.Path(os.readlink(launcher)) != current:
+            return None
+        binary = identity(owned(current))
+        if identity(launcher.lstat()) != before or pathlib.Path(os.readlink(launcher)) != current:
+            return None
+        return dict(launcher=before, binary=binary)
+    except (OSError, ValueError, RuntimeError):
+        return None
+
+
+def retire_idle(root, current, legacy=None, *, launcher=None):
     deadline = time.monotonic() + MAX_RETIREMENT_SECONDS
+    selection = selected_launcher(root, current, launcher)
+    if selection is None:
+        return dict(retiredReleases=0, retirementDeferred=True,
+                    retirementReason='native-retirement-launcher-unavailable')
     def remaining():
         return max(0, deadline - time.monotonic())
     def inventory():
@@ -343,6 +371,8 @@ def retire_idle(root, current, legacy=None):
                 owned(file)
             if not remaining():
                 return queued('native-retirement-time-budget')
+            if selected_launcher(root, current, launcher) != selection:
+                return queued('native-retirement-launcher-changed')
             binary.unlink()
             for file in metadata:
                 file.unlink()
@@ -439,7 +469,7 @@ def reconcile(home):
         result = dict(before=before, after=release['version'], changed=changed, downloaded=downloaded,
                       verified=True, sha256=release['sha256'], metadataUrl=release['metadataUrl'],
                       appsRestarted=0, backupsCreated=0)
-        result.update(retire_idle(root, binary, legacy=dict(path=old, identity=old_info)))
+        result.update(retire_idle(root, binary, legacy=dict(path=old, identity=old_info), launcher=link))
         return result
     finally:
         os.close(fd)
