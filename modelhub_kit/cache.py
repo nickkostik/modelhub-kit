@@ -4,8 +4,39 @@ import json
 import pathlib
 import re
 import shutil
+import sys
 from .core import GuardError, protected, run
 
+def _linux_process_inventory():
+    """Read bounded process arguments directly when a busy ps output is cut."""
+    if not sys.platform.startswith('linux') or not pathlib.Path('/proc').is_dir():
+        return None
+    output = []
+    try:
+        names = os.listdir('/proc')
+        if len(names) > 32768:
+            return None
+        for name in names:
+            if not name.isdigit():
+                continue
+            pid = int(name)
+            if pid in (os.getpid(), os.getppid()):
+                continue
+            try:
+                with open('/proc/' + name + '/cmdline', 'rb') as stream:
+                    data = stream.read(1024 * 1024 + 1)
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            except PermissionError:
+                return None
+            if len(data) > 1024 * 1024:
+                return None
+            value = data.rstrip(b'\0').replace(b'\0', b' ').decode('utf-8', errors='replace')
+            if value:
+                output.append(value)
+        return output
+    except (OSError, ValueError):
+        return None
 
 def process_inventory():
     if os.name == 'nt':
@@ -15,6 +46,10 @@ def process_inventory():
         command = ['ps', '-axww', '-o', 'pid=', '-o', 'command=']
     try:
         value = run(command, timeout=15)
+        if (isinstance(value, dict) and os.name != 'nt' and sys.platform.startswith('linux')
+                and value.get('exit') == 0 and value.get('outputTruncated') is True
+                and value.get('timedOut') is False):
+            return _linux_process_inventory()
         if (not isinstance(value, dict) or type(value.get('exit')) is not int or value['exit'] != 0
                 or value.get('outputTruncated') is not False or value.get('timedOut') is not False
                 or not isinstance(value.get('output'), str) or not value['output'].strip()):

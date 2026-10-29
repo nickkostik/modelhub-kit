@@ -66,6 +66,14 @@ class CacheTests(unittest.TestCase):
                 '500 kit maintenance\n400 kit parent\n123 node fixture.js\n')):
             self.assertEqual(cache.process_inventory(), ['node fixture.js'])
 
+    def test_linux_truncated_ps_inventory_uses_bounded_proc_fallback(self):
+        observed = self.observed('partial')
+        observed['outputTruncated'] = True
+        with patch.object(cache, 'os', self.unix), \
+                patch.object(cache, 'run', return_value=observed), \
+                patch.object(cache, '_linux_process_inventory', return_value=['node fixture.js']):
+            self.assertEqual(cache.process_inventory(), ['node fixture.js'])
+
     def test_unknown_or_active_inventory_preserves_cache_and_unrelated_data(self):
         with tempfile.TemporaryDirectory() as temporary:
             state = pathlib.Path(temporary) / 'state'
