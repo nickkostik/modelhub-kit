@@ -11,6 +11,7 @@ from .core import GuardError, atomic_json, check_identity, config, default_confi
 
 SETTLED = frozenset({'completed', 'current', 'updated', 'installed', 'ready', 'not-modified',
                      'absent', 'within-budget', 'cleaned', 'applied', 'not-installed', 'missing',
+                     'not-running',
                      'newer-installation-preserved', 'removed', 'no-configured-entries', 'no-configured-servers',
                      'no-configured-providers', 'no-configured-agents'})
 
@@ -190,8 +191,18 @@ def main():
             from .updater import update
             from .catalog import sync
             from .cache import enforce
+            from .native_helpers.codex_runtime import reconcile_codex_runtime
             result = {'format': 'modelhub-kit-maintenance-v1', 'version': 1, 'startedAt': now(), 'tools': update(settings, state),
                       'catalogs': sync(settings, state), 'modelCalls': 0}
+            if 'codex' in settings.get('tools', []) or any(
+                    isinstance(row, dict) and row.get('tool') == 'codex'
+                    for row in result['tools']):
+                try:
+                    result['codexRuntime'] = reconcile_codex_runtime(home=home)
+                except (GuardError, OSError, ValueError, KeyError, TypeError):
+                    result['codexRuntime'] = {
+                        'status': 'queued-runtime-unavailable',
+                    }
             result['integrations'] = integration_pass(settings, home, state)
             result['cache'] = enforce(settings, state, True)
             result['status'] = completion(result)

@@ -28,6 +28,7 @@ modelhub-kit schedule --apply
 ## What it does
 
 - Compares official stable versions and updates the owned installation actually used by the selected command. Current versions are left installed, missing tools require an explicit selection, and custom or newer installations are preserved.
+- Verifies Codex's separately running app-server and refreshes a stale one only after its local control RPC proves all loaded turns are idle. A current CLI package can no longer masquerade as a current native model/capability runtime.
 - Manages selected npm harnesses and ACP adapters, native Devin CLI, Cursor CLI and Muse Code, plus separate Cursor, Devin and Grok Bot desktop update channels. [Product support](docs/SUPPORT.md) lists ownership, platform and vendor constraints. Current or newer installations do not trigger an artifact download.
 - Serializes mutation with a kernel lock. Active tool sessions defer package replacement. Read-only probes have deadlines; supported vendor installs retain custody of their descendants until natural completion. Unsupported generic mutations queue. Native Droid updates bypass the vendor installer's process-kill step.
 - Refreshes user-selected HTTPS model endpoints with ETag/Last-Modified validators. Invalid/truncated responses retain the last good catalog. Exact model IDs and all supplied reasoning metadata remain intact; unknown capabilities stay unknown.

@@ -34,6 +34,12 @@ atomic application paths retain their own staging guards. A current Codex
 installation with a failed health check reports `repair-needed`; use an
 explicit `update --tool codex --repair` after reviewing the failure.
 
+Codex maintenance checks the installed CLI and the separately running
+app-server after package reconciliation. A stale app-server is updated only
+when two immediate control-RPC reads prove every loaded turn is idle. Active,
+unreadable or non-current control channels remain queued; the kit never signals
+an unverified server.
+
 Catalog sources are explicitly configured HTTPS sources. Capability metadata
 and reasoning choices come from those sources, with unknown capabilities kept
 unknown. A transport failure must not turn a last valid catalog into an empty

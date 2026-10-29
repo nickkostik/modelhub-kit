@@ -27,6 +27,7 @@ APPLICATION_FILES = frozenset({
     'modelhub_kit/native_helpers/__init__.py', 'modelhub_kit/native_helpers/omp.py',
     'modelhub_kit/native_helpers/droid.py', 'modelhub_kit/native_helpers/products.py',
     'modelhub_kit/native_helpers/desktop.py', 'modelhub_kit/native_helpers/macos_apps.py',
+    'modelhub_kit/native_helpers/codex_runtime.py',
     'launch.py', 'LICENSE', 'AGENTS.md', 'README.md', 'docs/INSTALL.md',
     'docs/OPERATIONS.md', 'docs/SUPPORT.md', 'docs/INTEGRATIONS.md', 'docs/FLEET.md',
 })

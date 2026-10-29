@@ -24,6 +24,7 @@ FILES = (
     "modelhub_kit/native_helpers/__init__.py", "modelhub_kit/native_helpers/omp.py",
     "modelhub_kit/native_helpers/droid.py", "modelhub_kit/native_helpers/products.py",
     "modelhub_kit/native_helpers/desktop.py", "modelhub_kit/native_helpers/macos_apps.py",
+    "modelhub_kit/native_helpers/codex_runtime.py",
 )
 OPTIONAL_FILES = (
     "LICENSE", "AGENTS.md", "README.md", "docs/INSTALL.md", "docs/OPERATIONS.md",

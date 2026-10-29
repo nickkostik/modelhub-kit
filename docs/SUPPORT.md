@@ -10,7 +10,7 @@ specific unmet guard; it does not mean that the vendor lacks that operating syst
 
 | IDs | Supported installation/channel |
 | --- | --- |
-| `codex`, `claude`, `opencode`, `qwen`, `pi`, `copilot`, `grok` | Owned npm installations; official package stable `latest` metadata. Codex verifies its optional native runtime. |
+| `codex`, `claude`, `opencode`, `qwen`, `pi`, `copilot`, `grok` | Owned npm installations; official package stable `latest` metadata. Codex verifies its optional native runtime package. |
 | `paseo`, `t3`, `kilo`, `dsh`, `cline`, `kimi`, `crush`, `openclaw`, `glm-acp-agent` | Owned npm installations using each project's published package and command. Installing a server package does not start its server. |
 | `codex-acp`, `claude-acp` | Official `@agentclientprotocol` npm adapters; explicit installation only. MCP/ACP configuration never installs or starts them. |
 | `devin-cli` | Native macOS/Linux/Windows x64 and arm64 bundles from Devin's stable manifest, with publisher SHA-256. |
@@ -166,3 +166,11 @@ configuration surface is interchangeable.
 
 Every registry entry also links its official package/project source. Native
 adapter tests use small local fixtures, not paid inference or live installers.
+
+Codex has two independently reported runtimes: the installed CLI package and
+the long-lived app-server that supplies native models and capabilities. Daily
+maintenance compares both versions after package reconciliation. A stale
+app-server is refreshed only after the local control RPC proves every loaded
+turn is idle; active or unverifiable servers remain queued. This avoids
+interrupting conversations and prevents a current CLI from silently serving an
+older native model list.
