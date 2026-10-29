@@ -582,7 +582,13 @@ def http_json(url, headers=None, limit=8 * 1024 * 1024):
 
 
 def default_config():
-    return {'version': 1, 'tools': ['codex', 'claude', 'opencode', 'qwen', 'pi'],
+    return {'version': 1, 'tools': [
+                'codex', 'claude', 'opencode', 'qwen', 'pi', 'copilot', 'grok',
+                'omp', 'droid', 'devin-cli', 'cursor-cli', 'muse', 'devin-desktop',
+                'cursor-desktop', 'grokbot', 'kilo', 'dsh', 'cline', 'crush',
+                'openclaw', 'kimi', 'glm-acp-agent', 't3', 'codex-acp',
+                'claude-acp', 'paseo',
+            ],
             'cache_budget_bytes': 2 * 1024**3, 'catalog_sources': [], 'mcp_servers': {}, 'acp_agents': {},
             'model_providers': {}, 'integrations': {}, 'client_versions': {}}
 
