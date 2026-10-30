@@ -4,6 +4,8 @@ import json
 import os
 import pathlib
 import re
+import math
+import time
 from .core import GuardError, MetadataHTTPError, atomic_json, http_json, now, read_json
 
 
@@ -148,6 +150,11 @@ def limit_report(config, state):
 
 def sync(config, state, fetch=http_json):
     root = pathlib.Path(state) / 'catalogs'
+    cooldown_file = pathlib.Path(state) / 'catalog-cooldowns.json'
+    cooldowns = read_json(cooldown_file, default={})
+    if not isinstance(cooldowns, dict):
+        raise GuardError('invalid-catalog-cooldown-state')
+    original_cooldowns = dict(cooldowns)
     results = []
     seen = set()
     for source in config.get('catalog_sources', []):
@@ -181,6 +188,13 @@ def sync(config, state, fetch=http_json):
         if prior and prior.get('sourceFingerprint') != fingerprint:
             prior = None
             headers = {k: v for k, v in headers.items() if k == 'Authorization'}
+        entry = cooldowns.get(name)
+        if (isinstance(entry, dict) and entry.get('fingerprint') == fingerprint
+                and type(entry.get('until')) is int and entry['until'] > time.time()):
+            results.append({'source': name, 'status': 'queued-rate-limit', 'retained': prior is not None,
+                            'retryAfterSeconds': max(1, math.ceil(entry['until'] - time.time()))})
+            continue
+        cooldowns.pop(name, None)
         try:
             value, validators = fetch(source['url'], headers)
             if value is None:
@@ -204,5 +218,15 @@ def sync(config, state, fetch=http_json):
                       'retained': prior is not None}
             if isinstance(error, MetadataHTTPError):
                 result['diagnostic'] = error.diagnostic()
+                if (error.status in (429, 503) and error.category == 'temporarily-unavailable'
+                        and type(error.retry_after) in (int, float) and math.isfinite(error.retry_after)
+                        and error.retry_after > 0):
+                    cooldowns[name] = {'fingerprint': fingerprint, 'until': math.ceil(time.time() + error.retry_after)}
+                    result['status'] = 'queued-rate-limit'
+                    result['retryAfterSeconds'] = math.ceil(error.retry_after)
             results.append(result)
+    # One bounded, overwritten receipt: no provider response bodies or keys.
+    cooldowns = {name: entry for name, entry in cooldowns.items() if name in seen}
+    if cooldowns != original_cooldowns:
+        atomic_json(cooldown_file, cooldowns)
     return results
