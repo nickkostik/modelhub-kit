@@ -2,7 +2,7 @@
 
 ModelHub Kit uses Python 3.11 or newer and the standard library. It does not
 need pip packages, a database, a background server, or model credentials to
-install. Node 22 or newer is needed for the npm-based tools you choose to
+install. Node 22 or newer is the minimum for the npm-based tools you choose to
 manage; an existing compatible Node installation is preserved.
 
 ## Choose a release

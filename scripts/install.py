@@ -15,6 +15,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 
 FILES = (
     "modelhub_kit/__init__.py", "modelhub_kit/__main__.py", "modelhub_kit/core.py", "modelhub_kit/mutation.py",
@@ -189,29 +191,66 @@ def _node_version(executable: str | None) -> str | None:
     return version
 
 
+def _official_node_lts() -> dict | None:
+    """Read the current stable LTS from Node's signed HTTPS release index."""
+    try:
+        request = urllib.request.Request(
+            "https://nodejs.org/dist/index.json",
+            headers={"Accept": "application/json", "User-Agent": "modelhub-kit-installer"},
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            content_type = response.headers.get_content_type()
+            body = response.read(4 * 1024 * 1024 + 1)
+        if len(body) > 4 * 1024 * 1024 or content_type not in {"application/json", "text/json"}:
+            return None
+        releases = json.loads(body)
+    except (OSError, ValueError, urllib.error.URLError):
+        return None
+    candidates = []
+    for release in releases if isinstance(releases, list) else []:
+        if not isinstance(release, dict) or not isinstance(release.get("lts"), str):
+            continue
+        match = re.fullmatch(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", release.get("version", ""))
+        codename = release["lts"].strip()
+        if match and re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{1,31}", codename):
+            candidates.append((tuple(int(part) for part in match.groups()), codename))
+    if not candidates:
+        return None
+    version, codename = max(candidates)
+    return {"version": ".".join(map(str, version)), "major": version[0], "codename": codename}
+
+
 def node_prerequisite(allow_install: bool = False) -> dict:
     executable = shutil.which("node")
     version = _node_version(executable)
     if version and int(version.split(".")[0]) >= 22:
         return {"ready": True, "version": version, "changed": False, "executable": executable}
+    latest = _official_node_lts()
     manager = None
-    if os.name == "nt":
+    if latest is None:
+        manager = None
+    elif os.name == "nt":
         manager = ["winget", "install", "--id", "OpenJS.NodeJS.LTS", "--exact", "--scope", "user",
                    "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"]
     elif sys.platform == "darwin":
-        manager = ["brew", "install", "node@24"]
+        manager = ["brew", "install", f"node@{latest['major']}"]
     elif shutil.which("pacman"):
-        manager = ["pacman", "-S", "--needed", "--noconfirm", "nodejs-lts-krypton", "npm"]
+        manager = ["pacman", "-S", "--needed", "--noconfirm",
+                   f"nodejs-lts-{latest['codename'].lower().replace('_', '-')}", "npm"]
     elif shutil.which("dnf"):
         manager = ["dnf", "install", "-y", "nodejs", "npm"]
     elif shutil.which("apt-get"):
         manager = ["apt-get", "install", "-y", "nodejs", "npm"]
     if manager and manager[0] not in {"brew", "winget"} and getattr(os, "geteuid", lambda: 1)() != 0:
         manager = ["sudo", "-n", *manager]
-    result = {"ready": False, "version": version, "changed": False, "requiredMajor": 22,
+    required_major = latest["major"] if latest else 22
+    result = {"ready": False, "version": version, "changed": False, "requiredMajor": required_major,
+              "latestLts": latest["version"] if latest else None,
               "installCommand": subprocess.list2cmdline(manager) if manager else None,
               "officialDownload": "https://nodejs.org/en/download",
-              "note": "Choose a supported Node 22+ package; the application itself needs only Python."}
+              "note": ("The official Node release index could not be verified; no package was installed."
+                       if latest is None else
+                       "Choose a supported Node LTS package; the application itself needs only Python.")}
     if not allow_install or not manager or not shutil.which(manager[0]):
         return result
     if sys.platform == "darwin":
@@ -227,8 +266,8 @@ def node_prerequisite(allow_install: bool = False) -> dict:
                                               stderr=subprocess.DEVNULL, env=dict(os.environ, LC_ALL="C")).decode()
             found = (re.search(r"Candidate:\s*(?:\d+:)?(\d+)\.", offered) if package_manager == "apt-get" else
                      re.search(r"^\s*(\d+)\.", offered, re.M))
-            if not found or int(found.group(1)) < 22:
-                result["note"] = "The configured repository does not advertise Node 22+. Use an official Node LTS download; no older Node package was installed."
+            if not found or int(found.group(1)) < required_major:
+                result["note"] = "The configured repository does not advertise the current Node LTS. Use an official Node LTS download; no older Node package was installed."
                 return result
         operation = run_mutation(manager, timeout=600,
                                  env=dict(os.environ, HOMEBREW_NO_AUTO_UPDATE="1"))
@@ -238,7 +277,8 @@ def node_prerequisite(allow_install: bool = False) -> dict:
             return result
         candidates = [shutil.which("node")]
         if sys.platform == "darwin":
-            prefix = subprocess.check_output(["brew", "--prefix", "node@24"], timeout=10, stderr=subprocess.DEVNULL).decode().strip()
+            prefix = subprocess.check_output(["brew", "--prefix", f"node@{required_major}"],
+                                             timeout=10, stderr=subprocess.DEVNULL).decode().strip()
             candidates.insert(0, str(Path(prefix) / "bin/node"))
         elif os.name == "nt":
             candidates.extend(str(Path(base) / suffix) for base, suffix in [
@@ -247,8 +287,9 @@ def node_prerequisite(allow_install: bool = False) -> dict:
                 (os.environ.get("ProgramFiles", ""), "nodejs/node.exe")] if base)
         for candidate in candidates:
             installed = _node_version(candidate)
-            if installed and int(installed.split(".")[0]) >= 22:
-                return {"ready": True, "version": installed, "changed": True, "executable": candidate}
+            if installed and int(installed.split(".")[0]) >= required_major:
+                return {"ready": True, "version": installed, "changed": True, "executable": candidate,
+                        "latestLts": latest["version"]}
     except (OSError, subprocess.SubprocessError, GuardError):
         result["prerequisiteInstallStatus"] = "unavailable-or-permission-required"
     result["note"] = "A compatible native package was not verified. Install an official Node LTS runtime and run the installer again."

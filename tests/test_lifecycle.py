@@ -28,12 +28,31 @@ class LifecycleTests(unittest.TestCase):
             with self.subTest(system=system), patch.object(installer, 'os', types.SimpleNamespace(name=native_os, environ={}, geteuid=lambda: 0)), \
                     patch.object(installer.sys, 'platform', system), \
                     patch.object(installer.shutil, 'which', side_effect=lambda name: '/fixture/' + name), \
+                    patch.object(installer, '_official_node_lts', return_value={'version': '24.0.0', 'major': 24, 'codename': 'Krypton'}), \
                     patch.object(installer, '_node_version', side_effect=[None, '24.0.0']), \
                     patch.object(installer.subprocess, 'run', side_effect=AssertionError('vendor timeout runner used')), \
                     patch.object(core, 'run_mutation', return_value={'exit': 0, 'treeComplete': True}) as mutate:
                 result = installer.node_prerequisite(True)
             self.assertEqual(result['ready'], system != 'darwin')
             self.assertEqual(mutate.call_count, int(system != 'darwin'))
+
+    def test_node_prerequisite_uses_current_official_lts_without_reinstalling_current_node(self):
+        lts = {'version': '26.13.0', 'major': 26, 'codename': 'Lithium'}
+        with patch.object(installer, '_node_version', return_value='26.13.0'), \
+                patch.object(installer, '_official_node_lts') as discover:
+            current = installer.node_prerequisite(True)
+        self.assertTrue(current['ready'])
+        discover.assert_not_called()
+        with patch.object(installer, '_node_version', side_effect=[None, '26.13.0']), \
+                patch.object(installer, '_official_node_lts', return_value=lts), \
+                patch.object(installer.os, 'name', 'posix'), \
+                patch.object(installer.sys, 'platform', 'linux'), \
+                patch.object(installer.shutil, 'which', side_effect=lambda name: '/fixture/' + name), \
+                patch.object(core, 'run_mutation', return_value={'exit': 0, 'treeComplete': True}) as mutate:
+            upgraded = installer.node_prerequisite(True)
+        self.assertTrue(upgraded['ready'])
+        self.assertEqual(upgraded['latestLts'], '26.13.0')
+        self.assertIn('nodejs-lts-lithium', mutate.call_args.args[0])
 
     def test_maintenance_receipt_binds_terminal_queued_operation(self):
         with tempfile.TemporaryDirectory() as folder:

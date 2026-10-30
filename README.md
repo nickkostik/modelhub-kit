@@ -16,7 +16,7 @@ Windows PowerShell:
 & .\scripts\install.ps1
 ```
 
-The installer creates a per-user command and initializes an empty personal configuration outside the checkout. It preserves existing configuration and compatible runtimes. Use `--prerequisites` on Unix or `-Prerequisites` on Windows to explicitly install missing prerequisites through a supported native package manager. Node 22+ is needed for npm tools; unsupported package-manager versions produce an actionable result. [Installation instructions](docs/INSTALL.md) cover release selection, paths, prerequisites, PATH setup, initialization, optional scheduling, kit upgrades and removal.
+The installer creates a per-user command and initializes an empty personal configuration outside the checkout. It preserves existing configuration and compatible runtimes. Use `--prerequisites` on Unix or `-Prerequisites` on Windows to explicitly install missing prerequisites through a supported native package manager. Missing or obsolete Node runtimes are resolved from the current official LTS release index; an already compatible Node is reused without a same-version reinstall. Unsupported package-manager versions produce an actionable result. [Installation instructions](docs/INSTALL.md) cover release selection, paths, prerequisites, PATH setup, initialization, optional scheduling, kit upgrades and removal.
 
 ```sh
 modelhub-kit doctor --json
