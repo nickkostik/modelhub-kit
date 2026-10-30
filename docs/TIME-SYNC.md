@@ -20,3 +20,21 @@ Check it is enabled with `systemctl is-enabled modelhub-timesync-resume.service`
 The next normal resume exercises the hook; there is no need to interrupt active
 sessions to test it. If the clock remains wrong, inspect the time service and
 network reachability. This example does not modify the time server selection.
+
+## Windows and Linux dual boot
+
+If Linux uses a UTC hardware clock (`timedatectl` reports `RTC in local TZ: no`),
+configure the Windows boot to read that clock as UTC as well. From an elevated
+Windows PowerShell, after confirming the machine uses that dual-boot setup:
+
+```powershell
+New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation' -Name RealTimeIsUniversal -PropertyType DWord -Value 1 -Force
+Set-Service -Name w32time -StartupType Automatic
+Start-Service -Name w32time
+w32tm /resync /rediscover
+```
+
+Check the time after each operating system has booted. The registry setting is
+for the hardware clock; it does not change the selected Windows time zone. See
+the [Arch Linux system-time guidance](https://wiki.archlinux.org/title/System_time#UTC_in_Microsoft_Windows)
+and [Microsoft's Windows Time documentation](https://learn.microsoft.com/en-us/windows-server/networking/windows-time-service/Windows-Time-Service-Tools-and-Settings).
