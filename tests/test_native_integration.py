@@ -81,6 +81,27 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual(integration.integrate(cfg, self.home, self.state, 'muse', True)['status'], 'queued')
         self.assertEqual(path.read_bytes(), before)
 
+    def test_remote_mcp_requires_a_public_https_endpoint(self):
+        accepted = integration.servers({
+            'mcp_servers': {'public': {'url': 'https://mcp.example.invalid/mcp'}}
+        })
+        self.assertEqual(accepted['public']['url'], 'https://mcp.example.invalid/mcp')
+        unsafe = [
+            'http://mcp.example.invalid/mcp',
+            'https://localhost/mcp',
+            'https://service.local/mcp',
+            'https://service.internal/mcp',
+            'https://' + '.'.join(('127', '0', '0', '1')) + '/mcp',
+            'https://' + '.'.join(('10', '0', '0', '1')) + '/mcp',
+            'https://' + '.'.join(('192', '168', '1', '10')) + '/mcp',
+            'https://' + '.'.join(('169', '254', '1', '1')) + '/mcp',
+            'https://[' + '::1' + ']/mcp',
+            'https://' + 'user' + ':' + 'secret' + '@mcp.example.invalid/mcp',
+        ]
+        for endpoint in unsafe:
+            with self.subTest(endpoint=endpoint), self.assertRaises(core.GuardError):
+                integration.servers({'mcp_servers': {'unsafe': {'url': endpoint}}})
+
     def test_stdio_native_shapes_and_disabled_entry_survive_repeat(self):
         cfg = {'mcp_servers': {'example': {'command': 'example-mcp', 'args': ['--stdio'], 'env_names': ['EXAMPLE_TOKEN']}}}
         integration.integrate(cfg, self.home, self.state, 'opencode', True)

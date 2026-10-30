@@ -22,7 +22,10 @@ Configure each server as one of:
 
 Only credential environment **names** are stored. Values are never read or
 copied. Commands and argument elements remain literal; the kit does not execute
-them during synchronization.
+them during synchronization. Remote MCP endpoints must be globally routable
+HTTPS URLs. Loopback, private-network, `.local`, `.internal`, `.lan` and
+`.home.arpa` names are rejected so a “remote” fleet entry cannot silently
+depend on one machine's local service.
 
 | Client | Native configuration |
 | --- | --- |

@@ -1,6 +1,7 @@
 """Receipt-owned native MCP configuration; no agent launches or credential reads."""
 import copy
 import hashlib
+import ipaddress
 import json
 import os
 import pathlib
@@ -25,6 +26,16 @@ def safe_url(url):
         raise GuardError('valid-https-port-required') from None
     if p.scheme != 'https' or not p.hostname or p.username or p.password or p.query or p.fragment:
         raise GuardError('public-https-url-without-secrets-required')
+    host = p.hostname.rstrip('.').lower()
+    if host == 'localhost' or host.endswith(('.localhost', '.local', '.internal', '.lan', '.home.arpa')):
+        raise GuardError('globally-routable-mcp-host-required')
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        if not address.is_global:
+            raise GuardError('globally-routable-mcp-host-required')
     return url
 
 

@@ -9,15 +9,15 @@ manage; an existing compatible Node installation is preserved.
 
 Use the [published releases](https://github.com/nickkostik/modelhub-kit/releases)
 to choose a reviewed version. For this release, either download and extract
-[the v0.2.3 source ZIP](https://github.com/nickkostik/modelhub-kit/archive/refs/tags/v0.2.3.zip)
+[the v0.2.4 source ZIP](https://github.com/nickkostik/modelhub-kit/archive/refs/tags/v0.2.4.zip)
 or use Git:
 
 ```sh
-git clone --branch v0.2.3 --depth 1 https://github.com/nickkostik/modelhub-kit.git modelhub-kit-v0.2.3
-cd modelhub-kit-v0.2.3
+git clone --branch v0.2.4 --depth 1 https://github.com/nickkostik/modelhub-kit.git modelhub-kit-v0.2.4
+cd modelhub-kit-v0.2.4
 ```
 
-The same Git commands work in PowerShell; use `Set-Location modelhub-kit-v0.2.3`
+The same Git commands work in PowerShell; use `Set-Location modelhub-kit-v0.2.4`
 if preferred. Git is optional when using a downloaded source archive. Inspect
 the source before running the installer below. Tags select a version; a version
 label alone is not an independent signature verification. The release contains
