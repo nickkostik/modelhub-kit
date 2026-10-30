@@ -166,6 +166,74 @@ class CoreTests(unittest.TestCase):
                 for entry in entries.values():
                     self.assertEqual(entry.read_text(), '// fixture')
 
+    @unittest.skipIf(os.name == 'nt', 'hardlink ownership fixture uses Unix metadata')
+    def test_unverified_hardlinked_npm_binary_is_queued_without_mutation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            prefix, state = pathlib.Path(folder) / 'prefix', pathlib.Path(folder) / 'state'
+            metadata = updater.package_file(prefix, '@anthropic-ai/claude-code')
+            core.atomic_json(metadata, {'name': '@anthropic-ai/claude-code', 'version': '1.0.0',
+                                        'bin': {'claude': 'bin/claude'}})
+            executable = metadata.parent / 'bin/claude'
+            core.atomic_text(executable, 'fixture executable')
+            os.link(executable, pathlib.Path(folder) / 'other-link')
+            with patch.object(updater, 'npm_command', return_value=['npm']), \
+                    patch.object(updater, 'run', return_value={'exit': 0, 'output': str(prefix)}), \
+                    patch.object(updater.shutil, 'which', side_effect=lambda name: str(executable) if name == 'claude' else None), \
+                    patch.object(updater, 'http_json') as fetch, patch.object(updater, 'run_mutation') as mutate:
+                result = updater.update({'tools': ['claude', 'pi']}, state)
+            self.assertEqual(result, [
+                {'tool': 'claude', 'status': 'queued', 'reason': 'unverified-npm-metadata-link', 'installed': False},
+                {'tool': 'pi', 'status': 'not-installed', 'installed': False},
+            ])
+            self.assertEqual(executable.read_text(), 'fixture executable')
+            fetch.assert_not_called()
+            mutate.assert_not_called()
+
+    def test_external_tool_is_never_probed_while_an_independent_tool_updates(self):
+        with tempfile.TemporaryDirectory() as folder:
+            prefix, state = pathlib.Path(folder) / 'prefix', pathlib.Path(folder) / 'state'
+            metadata = updater.package_file(prefix, '@earendil-works/pi-coding-agent')
+            package = {'name': '@earendil-works/pi-coding-agent', 'version': '1.0.0', 'bin': {'pi': 'cli.js'}}
+            core.atomic_json(metadata, package)
+            executable = metadata.parent / 'cli.js'
+            core.atomic_text(executable, '// fixture')
+            def which(name):
+                if name == 'qwen':
+                    raise AssertionError('externally managed tool must not be probed')
+                return str(executable) if name in ('pi', 'node') else None
+            def query(argv, **kwargs):
+                return {'exit': 0, 'output': json.dumps({'platform': 'linux', 'arch': 'x64'}) if '-p' in argv else str(prefix)}
+            def install(argv, **kwargs):
+                self.assertTrue(argv[-1].startswith('@earendil-works/pi-coding-agent@'))
+                core.atomic_json(metadata, dict(package, version='1.1.0'))
+                return {'exit': 0, 'output': '', 'treeComplete': True}
+            with patch.object(updater, 'npm_command', return_value=['npm']), \
+                    patch.object(updater, 'run', side_effect=query), \
+                    patch.object(updater.shutil, 'which', side_effect=which), \
+                    patch.object(updater, 'http_json', return_value=({'version': '1.1.0'}, {})) as fetch, \
+                    patch.object(cache, 'process_inventory', return_value=[]), \
+                    patch.object(updater, 'run_mutation', side_effect=install) as mutate, \
+                    patch.object(updater.platform, 'system', return_value='Linux'):
+                result = updater.update({'tools': ['qwen', 'pi'], 'externally_managed_tools': ['qwen']}, state)
+            self.assertEqual(result[0], {'tool': 'qwen', 'status': 'queued', 'reason': 'managed-by-external-updater'})
+            self.assertEqual(result[1]['status'], 'updated')
+            self.assertEqual(fetch.call_count, 1)
+            self.assertEqual(mutate.call_count, 1)
+
+    def test_external_tool_skip_also_applies_to_explicit_install_and_repair(self):
+        with patch.object(updater.shutil, 'which', side_effect=AssertionError('external tool was probed')), \
+                patch.object(updater, 'run_mutation') as mutate:
+            result = updater.update({'tools': ['qwen'], 'externally_managed_tools': ['qwen']},
+                                    pathlib.Path('unused-fixture'), selected=['qwen'],
+                                    install_missing=True, repair=True)
+        self.assertEqual(result, [{'tool': 'qwen', 'status': 'queued', 'reason': 'managed-by-external-updater'}])
+        mutate.assert_not_called()
+
+    def test_unknown_external_tool_rejected_before_any_probe(self):
+        with patch.object(updater.shutil, 'which', side_effect=AssertionError('unexpected probe')):
+            with self.assertRaisesRegex(core.GuardError, 'unknown-external-tool'):
+                updater.update({'tools': ['pi'], 'externally_managed_tools': ['unknown']}, pathlib.Path('unused-fixture'))
+
     def test_malformed_owned_npm_metadata_does_not_abort_following_tool(self):
         for malformed in ([], {'version': None}, {'version': 1}):
             with self.subTest(malformed=malformed), tempfile.TemporaryDirectory() as folder:

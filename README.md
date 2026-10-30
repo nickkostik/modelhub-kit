@@ -18,6 +18,8 @@ Windows PowerShell:
 
 The installer creates a per-user command and initializes an empty personal configuration outside the checkout. It preserves existing configuration and compatible runtimes. Use `--prerequisites` on Unix or `-Prerequisites` on Windows to explicitly install missing prerequisites through a supported native package manager. Missing or obsolete Node runtimes are resolved from the current official LTS release index; an already compatible Node is reused without a same-version reinstall. Unsupported package-manager versions produce an actionable result. [Installation instructions](docs/INSTALL.md) cover release selection, paths, prerequisites, PATH setup, initialization, optional scheduling, kit upgrades and removal.
 
+If another updater owns selected tools, list their IDs in `externally_managed_tools` in your local configuration. Kit skips those tools before probing or updating them and reports them as queued; other selected tools remain managed. This does not verify that the other updater is current or coordinate separately configured client integrations.
+
 ```sh
 modelhub-kit doctor --json
 modelhub-kit update --dry-run
@@ -38,6 +40,7 @@ modelhub-kit schedule --apply
 - Caps its own npm download cache at a configurable 2 GiB target when idle. Installed tools, external user caches, live environments, browser profiles, conversations, and authentication stores are outside that cleanup scope. Busy/unknown cache users defer cleanup.
 - Maintains or explicitly installs the kit through trusted SSH aliases, with finite checksummed source delivery and actual OS/boot checks before writes. Offline, mismatched and busy hosts remain queued; dual boots are separate enrollments. Private keys are never distributed.
 - Offers optional daily background scheduling: Linux user systemd, macOS launchd, and a hidden Windows scheduled task. Interactive harnesses receive no file, thread, CPU, or memory limits from the kit.
+- Provides an optional [time-sync resume unit](docs/TIME-SYNC.md) for Linux systems whose clock is stale after sleep or hibernation.
 
 ## Personal configuration
 

@@ -61,6 +61,9 @@ Maintenance reports `completed` only when every requested operation is settled.
 Deferred or unknown work produces `queued` and exit 75; failed updates or catalog
 refreshes produce `failed` and exit 1. A retained last-good catalog keeps native
 settings available but does not turn a failed refresh into a successful one.
+An unverified or hardlinked npm executable is preserved and queued before any
+install is attempted. On Linux, the scheduled unit accepts exit 75 as a clean
+service exit; the maintenance receipt still reports the work as queued.
 Plans do not apply pending changes. Routine state is one overwritten receipt,
 with no appended execution log or versioned backups.
 

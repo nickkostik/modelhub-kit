@@ -1,0 +1,15 @@
+[Unit]
+Description=Refresh time synchronization after a system resumes
+Documentation=https://www.freedesktop.org/software/systemd/man/latest/systemd.special.html
+DefaultDependencies=no
+StopWhenUnneeded=yes
+Before=sleep.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/true
+ExecStop=/usr/bin/systemctl --no-block try-restart systemd-timesyncd.service
+
+[Install]
+WantedBy=sleep.target

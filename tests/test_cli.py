@@ -51,6 +51,32 @@ class CommandTests(unittest.TestCase):
             self.assertEqual(result['modelCalls'], 0)
             self.assertEqual(json.loads((state / 'last-maintenance.json').read_text())['status'], 'queued')
 
+    def test_externally_managed_codex_skips_daemon_reconciliation(self):
+        from modelhub_kit import updater, catalog, cache
+        from modelhub_kit.native_helpers import codex_runtime
+        with tempfile.TemporaryDirectory() as tmp:
+            home = pathlib.Path(tmp)
+            settings = core.default_config()
+            settings['tools'] = ['codex', 'pi']
+            settings['externally_managed_tools'] = ['codex']
+            file, state = home / 'config.json', home / 'state'
+            core.atomic_json(file, settings)
+            rows = [{'tool': 'codex', 'status': 'queued', 'reason': 'managed-by-external-updater'},
+                    {'tool': 'pi', 'status': 'current'}]
+            with patch.dict(os.environ, {'HOME': str(home)}, clear=True), \
+                    patch.object(sys, 'argv', ['modelhub-kit', 'maintain']), \
+                    patch.object(cli, 'locations', return_value=(home, file, state)), \
+                    patch.object(cli, 'check_identity', return_value={}), \
+                    patch.object(updater, 'update', return_value=rows), \
+                    patch.object(catalog, 'sync', return_value=[]), \
+                    patch.object(cli, 'integration_pass', return_value=[]), \
+                    patch.object(cache, 'enforce', return_value={'status': 'within-budget'}), \
+                    patch.object(codex_runtime, 'reconcile_codex_runtime', side_effect=AssertionError('external Codex was probed')):
+                result = cli.main()
+            self.assertEqual(result['status'], 'queued')
+            self.assertNotIn('codexRuntime', result)
+            self.assertEqual(result['tools'], rows)
+
     def test_cli_reports_deferred_apply_with_temporary_failure_exit(self):
         for result, expected in (({'status': 'queued'}, 75), ({'status': 'failed'}, 1),
                                  ({'status': 'completed'}, 0), ({'status': 'planned'}, 0),

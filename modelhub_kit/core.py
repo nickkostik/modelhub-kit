@@ -589,6 +589,7 @@ def default_config():
                 'openclaw', 'kimi', 'glm-acp-agent', 't3', 'codex-acp',
                 'claude-acp', 'paseo',
             ],
+            'externally_managed_tools': [],
             'cache_budget_bytes': 2 * 1024**3, 'catalog_sources': [], 'mcp_servers': {}, 'acp_agents': {},
             'model_providers': {}, 'integrations': {}, 'client_versions': {}}
 
@@ -599,6 +600,11 @@ def config(path):
         raise GuardError('run-init-or-provide-version1-config')
     if not isinstance(value.get('tools', []), list) or len(value.get('tools', [])) > 32:
         raise GuardError('invalid-tool-selection')
+    external = value.get('externally_managed_tools', [])
+    if (not isinstance(external, list) or len(external) > 32
+            or any(not isinstance(name, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', name) for name in external)
+            or len(set(external)) != len(external)):
+        raise GuardError('invalid-external-tool-selection')
     if not isinstance(value.get('catalog_sources', []), list) or len(value.get('catalog_sources', [])) > 16:
         raise GuardError('invalid-catalog-sources')
     if not all(isinstance(s, dict) and set(s) <= {'id', 'url', 'bearer_env', 'provider_id'} for s in value.get('catalog_sources', [])):

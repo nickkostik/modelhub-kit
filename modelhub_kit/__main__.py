@@ -194,9 +194,9 @@ def main():
             from .native_helpers.codex_runtime import reconcile_codex_runtime
             result = {'format': 'modelhub-kit-maintenance-v1', 'version': 1, 'startedAt': now(), 'tools': update(settings, state),
                       'catalogs': sync(settings, state), 'modelCalls': 0}
-            if 'codex' in settings.get('tools', []) or any(
+            if 'codex' not in settings.get('externally_managed_tools', []) and ('codex' in settings.get('tools', []) or any(
                     isinstance(row, dict) and row.get('tool') == 'codex'
-                    for row in result['tools']):
+                    for row in result['tools'])):
                 try:
                     result['codexRuntime'] = reconcile_codex_runtime(home=home)
                 except (GuardError, OSError, ValueError, KeyError, TypeError):

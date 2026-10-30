@@ -12,6 +12,10 @@ from .core import GuardError, atomic_json, atomic_text, http_json, locations, pr
 
 SEMVER = re.compile(r'\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?')
 GROK_API_KEY_NAME = re.compile(r'(?:XAI|GROK|GROK_CODE|GROK_CODE_XAI)_API_KEY(?:_\d+)?|SUPER_GROK_PLAN')
+UNVERIFIED_NPM_OWNERSHIP = frozenset({
+    'unverified-npm-metadata-path', 'unverified-npm-metadata-owner',
+    'unverified-npm-metadata-link', 'npm-metadata-changed',
+})
 
 
 def subscription_only_environment(environment=None):
@@ -234,6 +238,13 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
     names = selected or config.get('tools', [])
     if not set(names) <= definitions.keys():
         raise GuardError('unknown-tool')
+    external = config.get('externally_managed_tools', [])
+    if (not isinstance(external, list) or any(not isinstance(name, str) for name in external)
+            or len(external) > 32 or len(set(external)) != len(external)):
+        raise GuardError('invalid-external-tool-selection')
+    if not set(external) <= definitions.keys():
+        raise GuardError('unknown-external-tool')
+    external = set(external)
     if install_missing and not selected:
         raise GuardError('install-missing-requires-explicit-tool-selection')
     if repair and not selected:
@@ -244,6 +255,11 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
     results = []
     npm, prefix = None, None
     for name in names:
+        if name in external:
+            # Another updater owns this tool. Do not inspect or mutate it,
+            # and do not claim that the external update has completed.
+            results.append({'tool': name, 'status': 'queued', 'reason': 'managed-by-external-updater'})
+            continue
         definition = definitions[name]
         command = shutil.which(definition['command'])
         managed = owned_installation(state, name)
@@ -400,5 +416,11 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
             results.append({'tool': name, 'status': 'updated' if result['exit'] == 0 and after == latest else 'update-failed',
                             'before': current, 'version': after, 'exit': result['exit'], 'installed': result['exit'] == 0})
         except (GuardError, OSError, ValueError) as error:
-            results.append({'tool': name, 'status': 'update-failed', 'reason': str(error) if isinstance(error, GuardError) else 'package-check-failed'})
+            reason = str(error) if isinstance(error, GuardError) else 'package-check-failed'
+            if reason in UNVERIFIED_NPM_OWNERSHIP:
+                # No vendor mutation was attempted: an installation whose
+                # ownership cannot be proven must remain queued and intact.
+                results.append({'tool': name, 'status': 'queued', 'reason': reason, 'installed': False})
+            else:
+                results.append({'tool': name, 'status': 'update-failed', 'reason': reason})
     return results

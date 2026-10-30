@@ -150,7 +150,7 @@ def _linux(command: list[str], state: Path) -> dict:
                "\nWorkingDirectory=" + _systemd_path(workdir) +
                "\nEnvironment=" + _systemd_value("MODELHUB_KIT_HOME=" + str(state)) +
                "\nNice=10\nIOSchedulingClass=idle\nCPUQuota=100%\nMemoryHigh=2G\n"
-               "TimeoutStartSec=infinity\nStandardOutput=null\nStandardError=journal\n")
+               "TimeoutStartSec=infinity\nSuccessExitStatus=75\nStandardOutput=null\nStandardError=journal\n")
     cadence = ("[Unit]\nDescription=ModelHub Kit daily maintenance schedule\n\n[Timer]\n# " + MARKER +
                "\nOnCalendar=daily\nPersistent=true\nRandomizedDelaySec=30min\nUnit=" + unit.name +
                "\n\n[Install]\nWantedBy=timers.target\n")
