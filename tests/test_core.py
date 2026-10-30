@@ -139,6 +139,54 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(result[0]['status'], 'updated' if system == 'Linux' else 'queued')
                 self.assertEqual(mutate.call_count, int(system == 'Linux'))
 
+    def test_malformed_npm_latest_isolated_to_one_tool(self):
+        # An invalid successful metadata response must not abort maintenance
+        # or prevent the next selected tool from being checked.
+        for malformed in (None, [], {'version': None}, {'version': 1}, {'version': True}):
+            with self.subTest(malformed=malformed), tempfile.TemporaryDirectory() as folder:
+                prefix, state = pathlib.Path(folder) / 'prefix', pathlib.Path(folder) / 'state'
+                entries = {}
+                for tool, package in (('qwen', '@qwen-code/qwen-code'),
+                                      ('pi', '@earendil-works/pi-coding-agent')):
+                    metadata = updater.package_file(prefix, package)
+                    core.atomic_json(metadata, {'name': package, 'version': '1.0.0', 'bin': {tool: 'cli.js'}})
+                    entries[tool] = metadata.parent / 'cli.js'
+                    core.atomic_text(entries[tool], '// fixture')
+                def which(name):
+                    return str(entries[name]) if name in entries else None
+                with patch.object(updater, 'npm_command', return_value=['npm']), \
+                        patch.object(updater, 'run', return_value={'exit': 0, 'output': str(prefix)}), \
+                        patch.object(updater.shutil, 'which', side_effect=which), \
+                        patch.object(updater, 'http_json', side_effect=[(malformed, {}), ({'version': '1.0.0'}, {})]), \
+                        patch.object(updater, 'run_mutation') as mutate:
+                    result = updater.update({'tools': ['qwen', 'pi']}, state)
+                self.assertEqual([r['status'] for r in result], ['update-failed', 'current'])
+                self.assertEqual(result[1]['version'], '1.0.0')
+                mutate.assert_not_called()
+                for entry in entries.values():
+                    self.assertEqual(entry.read_text(), '// fixture')
+
+    def test_malformed_owned_npm_metadata_does_not_abort_following_tool(self):
+        for malformed in ([], {'version': None}, {'version': 1}):
+            with self.subTest(malformed=malformed), tempfile.TemporaryDirectory() as folder:
+                prefix, state = pathlib.Path(folder) / 'prefix', pathlib.Path(folder) / 'state'
+                broken = updater.package_file(state / 'npm', '@qwen-code/qwen-code')
+                core.atomic_json(broken, malformed)
+                qwen = broken.parent / 'cli.js'; core.atomic_text(qwen, '// managed fixture')
+                metadata = updater.package_file(prefix, '@earendil-works/pi-coding-agent')
+                core.atomic_json(metadata, {'name': '@earendil-works/pi-coding-agent', 'version': '1.0.0', 'bin': {'pi': 'cli.js'}})
+                pi = metadata.parent / 'cli.js'; core.atomic_text(pi, '// fixture')
+                with patch.object(updater, 'npm_command', return_value=['npm']), \
+                        patch.object(updater, 'run', return_value={'exit': 0, 'output': str(prefix)}), \
+                        patch.object(updater.shutil, 'which', side_effect=lambda name: str({'qwen': qwen, 'pi': pi}.get(name, '')) or None), \
+                        patch.object(updater, 'owned_installation', side_effect=lambda state, name: {'launcher': str(qwen)} if name == 'qwen' else None), \
+                        patch.object(updater, 'http_json', return_value=({'version': '1.0.0'}, {})), \
+                        patch.object(updater, 'run_mutation') as mutate:
+                    result = updater.update({'tools': ['qwen', 'pi']}, state)
+                self.assertEqual([r['status'] for r in result], ['update-failed', 'current'])
+                self.assertEqual(json.loads(broken.read_text()), malformed)
+                mutate.assert_not_called()
+
     def test_current_codex_health_failure_requires_explicit_selected_repair(self):
         for repair in (False, True):
             with self.subTest(repair=repair), tempfile.TemporaryDirectory() as folder:

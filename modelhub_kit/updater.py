@@ -154,14 +154,24 @@ def package_file(prefix, package):
 
 
 def version_tuple(value):
-    if not SEMVER.fullmatch(value) or '-' in value:
+    if not isinstance(value, str) or not SEMVER.fullmatch(value) or '-' in value:
         raise GuardError('stable-release-required')
     return tuple(int(p) for p in value.split('.'))
 
 
+def npm_metadata_version(value):
+    """Treat malformed vendor metadata as a per-tool failure, not a crash."""
+    if not isinstance(value, dict):
+        raise GuardError('npm-package-metadata-invalid')
+    version = value.get('version')
+    version_tuple(version)
+    return version
+
+
 def healthy_codex(metadata, expected, env):
     value = json.loads(metadata.read_text())
-    target = value.get('bin', {}).get('codex')
+    bins = value.get('bin') if isinstance(value, dict) else None
+    target = bins.get('codex') if isinstance(bins, dict) else None
     if not isinstance(target, str):
         return False
     file = (metadata.parent / target).resolve()
@@ -330,11 +340,9 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
                     if os.name != 'nt' or not managed or pathlib.Path(command).absolute() != pathlib.Path(managed['launcher']):
                         results.append({'tool': name, 'status': 'different-active-installation-preserved'})
                         continue
-                current = json.loads(metadata.read_text()).get('version')
-                version_tuple(current)
+                current = npm_metadata_version(json.loads(metadata.read_text()))
             value, _ = http_json('https://registry.npmjs.org/' + definition['package'].replace('/', '%2f') + '/latest')
-            latest = value.get('version', '')
-            version_tuple(latest)
+            latest = npm_metadata_version(value)
             if current and version_tuple(current) >= version_tuple(latest) and not repair:
                 if name == 'codex' and not healthy_codex(metadata, current, env):
                     results.append({'tool': name, 'status': 'repair-needed',
@@ -383,7 +391,7 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
             if result.get('treeComplete') is not True or result.get('observationFailed'):
                 results.append({'tool': name, 'status': 'queued', 'reason': 'vendor-mutation-custody-unknown', 'installed': False})
                 continue
-            after = json.loads(metadata.read_text()).get('version') if metadata.is_file() else None
+            after = npm_metadata_version(json.loads(metadata.read_text())) if metadata.is_file() else None
             if result['exit'] == 0 and after == latest and name == 'codex' and not healthy_codex(metadata, latest, env):
                 results.append({'tool': name, 'status': 'update-failed', 'reason': 'native-platform-runtime-unavailable', 'installed': True})
                 continue
