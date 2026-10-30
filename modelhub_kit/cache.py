@@ -7,11 +7,22 @@ import shutil
 import sys
 from .core import GuardError, protected, run
 
+NPM_INVOCATION = re.compile(r'(?:^|[\s/])(?:npm|npx)(?:\.(?:cmd|exe))?["\']?(?:\s|$)|/(?:npm|npx)-cli\.js["\']?(?:\s|$)', re.I)
+
+
+class ProcessInventory(list):
+    """String-compatible process commands plus bounded parent/lifecycle rows."""
+
+    def __init__(self, commands, rows=None):
+        super().__init__(commands)
+        self.rows = rows
+
+
 def _linux_process_inventory():
     """Read bounded process arguments directly when a busy ps output is cut."""
     if not sys.platform.startswith('linux') or not pathlib.Path('/proc').is_dir():
         return None
-    output = []
+    output, rows = [], []
     try:
         names = os.listdir('/proc')
         if len(names) > 32768:
@@ -33,17 +44,72 @@ def _linux_process_inventory():
                 return None
             value = data.rstrip(b'\0').replace(b'\0', b' ').decode('utf-8', errors='replace')
             if value:
+                try:
+                    with open('/proc/' + name + '/stat', 'rb') as stream:
+                        stat = stream.read(65537)
+                    if len(stat) > 65536:
+                        return None
+                    tail = stat.rsplit(b')', 1)[1].strip().split()
+                    ppid = int(tail[1])
+                except (FileNotFoundError, ProcessLookupError):
+                    continue
+                except (OSError, IndexError, ValueError):
+                    return None
+                row = {'pid': pid, 'ppid': ppid, 'command': value}
+                if NPM_INVOCATION.search(value):
+                    try:
+                        with open('/proc/' + name + '/environ', 'rb') as stream:
+                            environment = stream.read(1024 * 1024 + 1)
+                        if len(environment) > 1024 * 1024:
+                            return None
+                    except (FileNotFoundError, ProcessLookupError):
+                        continue
+                    except (OSError, PermissionError):
+                        pass
+                    else:
+                        prefix = b'npm_lifecycle_event='
+                        for entry in environment.split(b'\0'):
+                            if entry.startswith(prefix):
+                                row['lifecycle'] = entry[len(prefix):].decode('utf-8', errors='replace')
+                                break
                 output.append(value)
-        return output
+                rows.append(row)
+        return ProcessInventory(output, rows)
     except (OSError, ValueError):
         return None
+
+
+def _attach_linux_lifecycles(rows):
+    """Read only npm children's lifecycle names without persisting environments."""
+    if not sys.platform.startswith('linux') or not pathlib.Path('/proc').is_dir():
+        return
+    npm_parents = {row['pid'] for row in rows if NPM_INVOCATION.search(row['command'])}
+    for row in rows:
+        if row.get('ppid') not in npm_parents:
+            continue
+        path = '/proc/%d/environ' % row['pid']
+        try:
+            with open(path, 'rb') as stream:
+                environment = stream.read(1024 * 1024 + 1)
+            if len(environment) > 1024 * 1024:
+                continue
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except (OSError, PermissionError):
+            continue
+        prefix = b'npm_lifecycle_event='
+        for entry in environment.split(b'\0'):
+            if entry.startswith(prefix):
+                row['lifecycle'] = entry[len(prefix):].decode('utf-8', errors='replace')
+                break
+
 
 def process_inventory():
     if os.name == 'nt':
         command = ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
-                   '@(Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine) | ConvertTo-Json -Compress']
+                   '@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine) | ConvertTo-Json -Compress']
     else:
-        command = ['ps', '-axww', '-o', 'pid=', '-o', 'command=']
+        command = ['ps', '-axww', '-o', 'pid=', '-o', 'ppid=', '-o', 'command=']
     try:
         value = run(command, timeout=15)
         if (isinstance(value, dict) and os.name != 'nt' and sys.platform.startswith('linux')
@@ -54,14 +120,14 @@ def process_inventory():
                 or value.get('outputTruncated') is not False or value.get('timedOut') is not False
                 or not isinstance(value.get('output'), str) or not value['output'].strip()):
             return None
-        result = []
+        result, rows = [], []
         if os.name == 'nt':
-            rows = json.loads(value['output'])
-            if isinstance(rows, dict):
-                rows = [rows]
-            if not isinstance(rows, list) or not rows:
+            source_rows = json.loads(value['output'])
+            if isinstance(source_rows, dict):
+                source_rows = [source_rows]
+            if not isinstance(source_rows, list) or not source_rows:
                 return None
-            for row in rows:
+            for row in source_rows:
                 if not isinstance(row, dict) or type(row.get('ProcessId')) is not int or row['ProcessId'] < 0:
                     return None
                 name, arguments = row.get('Name'), row.get('CommandLine')
@@ -75,14 +141,24 @@ def process_inventory():
                 if not arguments and name.lower() in ('node.exe', 'bun.exe', 'npm.exe', 'npx.exe'):
                     return None
                 result.append(arguments or name)
-            return result
+                rows.append({'pid': row['ProcessId'], 'ppid': row.get('ParentProcessId'),
+                             'command': arguments or name})
+            return ProcessInventory(result, rows)
         for line in value['output'].splitlines():
-            row = line.strip().split(None, 1)
-            if len(row) != 2 or not row[0].isdigit():
+            fields = line.strip().split(None, 2)
+            if len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit():
+                pid, ppid, command = int(fields[0]), int(fields[1]), fields[2]
+            elif len(fields) in (2, 3) and fields[0].isdigit():
+                pid, ppid = int(fields[0]), None
+                command = fields[1] if len(fields) == 2 else fields[1] + ' ' + fields[2]
+            else:
                 return None
-            if int(row[0]) not in (os.getpid(), os.getppid()):
-                result.append(row[1])
-        return result
+            if pid in (os.getpid(), os.getppid()):
+                continue
+            result.append(command)
+            rows.append({'pid': pid, 'ppid': ppid, 'command': command})
+        _attach_linux_lifecycles(rows)
+        return ProcessInventory(result, rows)
     except (GuardError, OSError, ValueError, KeyError, TypeError):
         return None
 
@@ -107,6 +183,35 @@ def allocated_bytes(root):
     return total
 
 
+def npm_cache_busy(directory, processes):
+    """Allow a handed-off npm script child; protect installers and cache readers."""
+    if not isinstance(processes, (list, tuple)):
+        return True
+    normalized_directory = str(directory).replace('\\', '/').lower().rstrip('/') + '/'
+    rows = getattr(processes, 'rows', None)
+    by_pid = {row['pid']: row for row in rows} if isinstance(rows, list) else {}
+    child_lifecycles = {}
+    if isinstance(rows, list):
+        for row in rows:
+            if row.get('ppid') is not None and row.get('lifecycle'):
+                child_lifecycles.setdefault(row['ppid'], []).append(row['lifecycle'])
+    for index, process in enumerate(processes):
+        value = str(process)
+        normalized = value.replace('\\', '/').lower()
+        if normalized_directory in normalized or re.search(r'(?:^|[\s/])node-gyp(?:\s|$)', normalized):
+            return True
+        if not NPM_INVOCATION.search(normalized):
+            continue
+        row = rows[index] if isinstance(rows, list) and index < len(rows) else by_pid.get(index)
+        lifecycles = child_lifecycles.get(row.get('pid'), []) if isinstance(row, dict) else []
+        if (re.search(r'(?:^|\s)(?:run(?:-script)?\s+\S+|start|dev)(?:\s|$)', normalized)
+                and lifecycles and all(not re.fullmatch(r'(?:pre|post)?install', name, re.I)
+                                       for name in lifecycles)):
+            continue
+        return True
+    return False
+
+
 def enforce(config, state, apply=False):
     directory = pathlib.Path(state) / 'cache/npm'
     budget = config['cache_budget_bytes']
@@ -125,8 +230,7 @@ def enforce(config, state, apply=False):
     if not apply:
         return dict(result, status='over-budget')
     processes = process_inventory()
-    normalized = str(directory).replace('\\', '/').lower()
-    if processes is None or any(normalized in p.replace('\\', '/').lower() or re.search(r'(?:^|[ /\\])(?:npm|npx)(?:[. /\\]|$)|npm-cli\.js|npx-cli\.js', p) for p in processes):
+    if processes is None or npm_cache_busy(directory, processes):
         return dict(result, status='queued-active-or-unknown-runtime')
     # Only this protected private download cache; no user ~/.npm, uv, installed tools, profiles, or logs.
     for child in directory.iterdir():

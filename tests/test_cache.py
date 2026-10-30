@@ -74,6 +74,26 @@ class CacheTests(unittest.TestCase):
                 patch.object(cache, '_linux_process_inventory', return_value=['node fixture.js']):
             self.assertEqual(cache.process_inventory(), ['node fixture.js'])
 
+    def test_idle_npm_launchers_do_not_pin_the_download_cache(self):
+        directory = pathlib.Path('/fixture/cache/npm')
+        for command in ('npm run start', 'npm start', 'npm run dev'):
+            rows = [
+                {'pid': 100, 'ppid': 1, 'command': command},
+                {'pid': 101, 'ppid': 100, 'command': 'node server.js',
+                 'lifecycle': command.split()[-1]},
+            ]
+            inventory = cache.ProcessInventory([row['command'] for row in rows], rows)
+            with self.subTest(command=command):
+                self.assertFalse(cache.npm_cache_busy(directory, inventory))
+        installers = cache.ProcessInventory(
+            ['npm run preinstall', 'sh -c fixture'],
+            [{'pid': 200, 'ppid': 1, 'command': 'npm run preinstall'},
+             {'pid': 201, 'ppid': 200, 'command': 'sh -c fixture', 'lifecycle': 'preinstall'}],
+        )
+        self.assertTrue(cache.npm_cache_busy(directory, installers))
+        self.assertTrue(cache.npm_cache_busy(directory, ['npm install fixture']))
+        self.assertTrue(cache.npm_cache_busy(directory, None))
+
     def test_unknown_or_active_inventory_preserves_cache_and_unrelated_data(self):
         with tempfile.TemporaryDirectory() as temporary:
             state = pathlib.Path(temporary) / 'state'
