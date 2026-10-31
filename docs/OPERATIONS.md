@@ -129,6 +129,20 @@ environments, model weights, browser profiles, messages, or user files. The
 kit writes bounded metadata receipts instead of retaining updater logs and
 backup trees.
 
+On Arch or Omarchy, pacman's system download cache is separate from this user
+budget. To clear it daily while leaving installed packages and live processes
+alone, install the optional native `paccache` timer policy:
+
+```sh
+sudo scripts/arch-pacman-cache.sh --install
+scripts/arch-pacman-cache.sh --check
+```
+
+It uses the distribution's existing service and timer with idle CPU and disk
+priority. The policy retains no downloaded package archives; pacman downloads
+them again when a future update needs them. It preserves an existing custom
+policy instead of replacing it and creates no backup files.
+
 An unreadable cache subtree or a file disappearing during measurement queues
 cleanup with unknown byte counts. A partial scan never counts as within budget,
 and the kit leaves the remaining cache untouched until it can measure it.
