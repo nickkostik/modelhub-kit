@@ -173,6 +173,9 @@ thinking budgets. Pi receives separate providers in `models.json`; an explicit
 `thinkingLevelMap` can map native picker levels to different provider strings.
 If Pi's native keys cannot represent every advertised effort, the projection
 queues without clipping the source or modifying the current provider.
+Generated selectors omit reasoning-off choices and retain every representable
+positive effort. A positive variant that explicitly disables thinking is
+queued for review. Native provider behavior still depends on its own API.
 
 ### Native Google in OpenCode
 

@@ -181,7 +181,8 @@ class NativeIntegration(unittest.TestCase):
                     for level in ('low', 'medium', 'high')}
         self.assertEqual(first['variants'], expected)
         self.assertEqual(first['options'], expected['medium'])
-        self.assertNotIn('options', provider['models']['other-model'])
+        self.assertEqual(provider['models']['other-model']['options'],
+                         {'thinkingConfig': {'thinkingLevel': 'high', 'includeThoughts': True}})
         self.assertEqual(doc['model'], existing['model'])
         self.assertEqual(doc['small_model'], existing['small_model'])
         self.assertEqual(doc['provider']['custom'], existing['provider']['custom'])
@@ -231,6 +232,7 @@ class NativeIntegration(unittest.TestCase):
             {'variants': {'low': {'thinkingConfig': {'thinkingLevel': 'max'}}}},
             {'variants': {'low': {'thinkingConfig': {'thinkingBudget': True}}}},
             {'variants': {'low': {'thinkingConfig': {'thinkingBudget': -2}}}},
+            {'variants': {'low': {'thinkingConfig': {'thinkingBudget': 0}}}},
             {'variants': {'low': {'thinkingConfig': {'thinkingLevel': 'low', 'unknown': True}}}},
             {'default_reasoning_level': 'not-advertised'},
         ]
@@ -377,12 +379,26 @@ class NativeIntegration(unittest.TestCase):
         path = self.home / '.pi/agent/models.json'
         provider = json.loads(path.read_text())['providers']['kit-example']
         self.assertEqual(provider['apiKey'], '${EXAMPLE_ACCESS_TOKEN}')
-        self.assertEqual(provider['models'][0]['thinkingLevelMap']['off'], 'none')
+        self.assertNotIn('off', provider['models'][0]['thinkingLevelMap'])
         self.assertEqual(provider['models'][0]['thinkingLevelMap']['max'], 'max')
         before = path.read_bytes()
         cfg = self.source(['low', 'custom-verified'])
         self.assertEqual(projection.project(cfg, self.home, self.state, 'pi', True)['status'], 'queued')
         self.assertEqual(path.read_bytes(), before)
+
+    def test_reasoning_off_is_omitted_without_losing_positive_efforts(self):
+        row = {'id': 'fixture', 'supported_reasoning_levels': ['none', 'low', 'high', 'max'],
+               'default_reasoning_level': 'none',
+               'variants': {'none': {'enable_thinking': False}, 'max': {'reasoningEffort': 'max'}}}
+        model = projection.opencode_model(row, 'openai-completions')
+        self.assertEqual(set(model['variants']), {'low', 'high', 'max'})
+        self.assertNotIn('off', projection.pi_model(row)['thinkingLevelMap'])
+        template = {'slug': 'native', 'supported_reasoning_levels': []}
+        codex = projection.codex_catalog(template, [row])['models'][0]
+        self.assertEqual(codex['default_reasoning_level'], 'high')
+        self.assertEqual([item['effort'] for item in codex['supported_reasoning_levels']], ['low', 'high', 'max'])
+        with self.assertRaises(core.GuardError):
+            projection.opencode_model({'id': 'bad', 'variants': {'max': {'enable_thinking': False}}}, 'openai-completions')
 
     def test_codex_output_ceiling_does_not_force_early_compaction(self):
         rows = [

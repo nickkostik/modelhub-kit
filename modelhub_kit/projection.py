@@ -18,6 +18,20 @@ MODEL_CLIENTS = ('codex', 'opencode', 'pi', 'paseo', 't3', 'devin', 'muse', 'cla
 PROTOCOLS = ('openai-responses', 'openai-completions', 'anthropic-messages', 'google-generative-ai')
 GOOGLE_LEVELS = ('minimal', 'low', 'medium', 'high')
 OPENCODE_GO_PREFIX = 'opencode-modelhub-kit-'
+OFF_REASONING_EFFORTS = frozenset(('none', 'off', 'disabled', 'no', 'false'))
+
+
+def reasoning_off(value):
+    return isinstance(value, str) and value.strip().lower() in OFF_REASONING_EFFORTS
+
+
+def reasoning_default(levels, declared):
+    if declared in levels:
+        return declared
+    if declared is not None and not reasoning_off(declared):
+        raise GuardError('source-default-effort-not-in-advertised-levels')
+    return next((level for level in ('high', 'medium', 'xhigh', 'max', 'low', 'minimal')
+                 if level in levels), levels[0] if levels else None)
 
 
 def provider_url(url):
@@ -165,7 +179,7 @@ def codex_retirement(root, state, names):
 
 
 def efforts(row):
-    """Preserve exact advertised strings, including new or custom effort names."""
+    """Preserve every advertised reasoning effort while excluding off."""
     values = []
     def add(items):
         if isinstance(items, list):
@@ -173,7 +187,7 @@ def efforts(row):
                 value = item if isinstance(item, str) else item.get('effort', item.get('id')) if isinstance(item, dict) else None
                 if not isinstance(value, str) or not value or len(value) > 128:
                     raise GuardError('exact-reasoning-effort-strings-required')
-                if value not in values:
+                if not reasoning_off(value) and value not in values:
                     values.append(value)
     for field in ('supported_reasoning_levels', 'supportedReasoningEfforts', 'supported_reasoning_efforts', 'reasoning_efforts', 'reasoningEfforts', 'reasoning_levels'):
         add(row.get(field))
@@ -244,11 +258,10 @@ def google_variants(row, variants):
                 or set(thinking) - {'thinkingLevel', 'thinkingBudget', 'includeThoughts'}
                 or 'thinkingLevel' in thinking and thinking['thinkingLevel'] not in GOOGLE_LEVELS
                 or 'thinkingBudget' in thinking and (type(thinking['thinkingBudget']) is not int or thinking['thinkingBudget'] < -1)
+                or thinking.get('thinkingBudget') == 0 and 'thinkingLevel' not in thinking
                 or 'includeThoughts' in thinking and type(thinking['includeThoughts']) is not bool):
             raise GuardError('google-effort-thinking-config-required')
-    default = row.get('default_reasoning_level', row.get('defaultReasoningEffort'))
-    if default is not None and default not in levels:
-        raise GuardError('source-default-effort-not-in-advertised-levels')
+    default = reasoning_default(levels, row.get('default_reasoning_level', row.get('defaultReasoningEffort')))
     return {key: copy.deepcopy(value) for key, value in variants[default].items() if key != 'disabled'} if default is not None else None
 
 
@@ -273,6 +286,12 @@ def opencode_model(row, protocol):
     variants = copy.deepcopy(row.get('variants', {}))
     if not isinstance(variants, dict) or not all(isinstance(v, dict) for v in variants.values()):
         raise GuardError('native-reasoning-variant-options-required')
+    variants = {key: value for key, value in variants.items() if not reasoning_off(key)}
+    for options in variants.values():
+        if (options.get('enable_thinking') is False or options.get('enableThinking') is False
+                or reasoning_off(options.get('reasoningEffort')) or reasoning_off(options.get('reasoning_effort'))
+                or isinstance(options.get('thinking'), dict) and options['thinking'].get('type') in ('disabled', 'none')):
+            raise GuardError('positive-reasoning-variant-disables-thinking')
     if protocol == 'google-generative-ai':
         default = google_variants(row, variants)
         if default is not None:
@@ -295,9 +314,11 @@ def pi_model(row):
     levels = efforts(row)
     reasoning = row.get('reasoning', {})
     wire = row.get('thinkingLevelMap', reasoning.get('thinkingLevelMap') if isinstance(reasoning, dict) else None)
-    native = ('off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')
+    native = ('minimal', 'low', 'medium', 'high', 'xhigh', 'max')
     if wire is None:
-        wire = {('off' if e == 'none' else e): e for e in levels}
+        wire = {e: e for e in levels}
+    if isinstance(wire, dict):
+        wire = {key: value for key, value in wire.items() if not reasoning_off(key) and not reasoning_off(value)}
     if not isinstance(wire, dict) or any(v is not None and not isinstance(v, str) for v in wire.values()) or set(wire) - set(native) or not set(levels) <= {v for v in wire.values() if isinstance(v, str)}:
         raise GuardError('pi-native-thinking-level-map-cannot-represent-all-efforts')
     value = {'id': row['id'], 'name': label(row), 'reasoning': bool(levels)}
@@ -330,9 +351,7 @@ def codex_catalog(template, rows):
         if context is not None and maximum is not None and maximum > context:
             value['context_window'] = maximum
         values = efforts(row)
-        default = row.get('default_reasoning_level', row.get('defaultReasoningEffort'))
-        if default is not None and default not in values:
-            raise GuardError('source-default-effort-not-in-advertised-levels')
+        default = reasoning_default(values, row.get('default_reasoning_level', row.get('defaultReasoningEffort')))
         value.update(slug=row['id'], display_name=label(row), priority=index, visibility='list', supported_in_api=True,
                      supported_reasoning_levels=[{'effort': e, 'description': e} for e in values], default_reasoning_level=default)
         if 'input_modalities' in row:
