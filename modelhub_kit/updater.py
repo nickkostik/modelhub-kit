@@ -403,7 +403,12 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
                           '--omit=dev', '--engine-strict', '--no-audit', '--no-fund', '--logs-max=0', '--cache', str(cache),
                           '--registry=https://registry.npmjs.org']
             if name == 'opencode':
-                args.append('--allow-scripts=@opencode/cli')
+                npm_version = run(npm + ['--version'], env=env, timeout=10)
+                version = npm_version['output'].strip()
+                if npm_version['exit'] or not SEMVER.fullmatch(version):
+                    raise GuardError('npm-version-unavailable')
+                if int(version.split('.')[0]) >= 11:
+                    args.append('--allow-scripts=@opencode/cli')
             args.append(definition['package'] + '@' + latest)
             result = run_mutation(args, env=env, timeout=300)
             if result.get('treeComplete') is not True or result.get('observationFailed'):
