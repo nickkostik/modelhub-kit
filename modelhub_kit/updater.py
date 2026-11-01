@@ -401,8 +401,10 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
                 continue
             args = npm + ['install', '--global', '--prefix', str(target_prefix), '--include=optional', '--umask=0022',
                           '--omit=dev', '--engine-strict', '--no-audit', '--no-fund', '--logs-max=0', '--cache', str(cache),
-                          '--registry=https://registry.npmjs.org',
-                          definition['package'] + '@' + latest]
+                          '--registry=https://registry.npmjs.org']
+            if name == 'opencode':
+                args.append('--allow-scripts=@opencode/cli')
+            args.append(definition['package'] + '@' + latest)
             result = run_mutation(args, env=env, timeout=300)
             if result.get('treeComplete') is not True or result.get('observationFailed'):
                 results.append({'tool': name, 'status': 'queued', 'reason': 'vendor-mutation-custody-unknown', 'installed': False})
