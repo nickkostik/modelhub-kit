@@ -221,7 +221,7 @@ def native_idle(client):
         'paseo': r'(?:paseo|@getpaseo[/\\](?:cli|server))',
         'codex': r'(?:codex|@openai[/\\]codex)',
         'claude': r'(?:claude|claude-code|@anthropic-ai[/\\]claude-code)',
-        'opencode': r'(?:opencode|opencode-ai)',
+        'opencode': r'(?:opencode|opencode-ai|@opencode[/\\]cli)',
         'qwen': r'(?:qwen|@qwen-code[/\\]qwen-code)',
         'pi': r'(?:pi|@earendil-works[/\\]pi-coding-agent)',
         'copilot': r'(?:copilot|@github[/\\]copilot)',

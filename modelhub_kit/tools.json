@@ -10,9 +10,9 @@
     "source": "https://code.claude.com/docs/en/setup"
   },
   "opencode": {
-    "package": "opencode-ai",
+    "package": "@opencode/cli",
     "command": "opencode",
-    "source": "https://opencode.ai/docs"
+    "source": "https://opencode.ai/v2/docs/"
   },
   "qwen": {
     "package": "@qwen-code/qwen-code",
