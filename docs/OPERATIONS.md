@@ -150,6 +150,19 @@ The reload does not restart active connections. Retry continues while a host
 is unavailable, with a maximum delay of ten minutes. This example does not
 create or enable a tunnel.
 
+If an existing `disconnected-mcp-cleanup.timer` scans for abandoned workers,
+the optional examples below reduce its frequency and suppress its routine
+output. They do not install a cleaner or stop active workers:
+
+```sh
+sudo install -D -m 0644 examples/systemd/disconnected-mcp-cleanup-timer.conf \
+  /etc/systemd/system/disconnected-mcp-cleanup.timer.d/50-lightweight.conf
+sudo install -D -m 0644 examples/systemd/disconnected-mcp-cleanup-service.conf \
+  /etc/systemd/system/disconnected-mcp-cleanup.service.d/50-quiet.conf
+sudo systemctl daemon-reload
+sudo systemctl restart disconnected-mcp-cleanup.timer
+```
+
 ## Cache budget
 
 ```sh
