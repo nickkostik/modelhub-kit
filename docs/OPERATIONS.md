@@ -67,6 +67,22 @@ service exit; the maintenance receipt still reports the work as queued.
 Plans do not apply pending changes. Routine state is one overwritten receipt,
 with no appended execution log or versioned backups.
 
+### Read-only filesystems
+
+An online host can have enough free space but still reject updates if its
+installation or temporary directory is on a read-only filesystem. On Linux,
+inspect the mount options for the affected paths, for example:
+
+```sh
+findmnt --target "$HOME" -o TARGET,SOURCE,FSTYPE,OPTIONS
+findmnt --target /tmp -o TARGET,SOURCE,FSTYPE,OPTIONS
+```
+
+If the relevant mount is `ro`, resolve the filesystem problem before retrying
+the update. Follow the filesystem's maintenance guidance; do not repeatedly
+reinstall tools or force a read-write remount to work around an error. Btrfs
+documents its [offline checking guidance](https://btrfs.readthedocs.io/en/latest/btrfs-check.html).
+
 ### Installed source and a running model adapter
 
 The kit projects native provider configuration; it does not run an inference
