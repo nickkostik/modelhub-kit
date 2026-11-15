@@ -59,6 +59,10 @@ schema, not a request to update a package.
 Local MCP packages with native dependencies must match the target device's
 operating system and CPU architecture. Install those dependencies on the target
 device rather than copying a compiled package directory from another machine.
+An aggregate gateway is not a substitute for a local filesystem, browser,
+container engine, SSH configuration, or other machine-specific MCP server.
+Keep working named local registrations when adding a gateway; the same tool name
+on another host can refer to different files, accounts, or resources.
 For SQLite servers, retain the configured database path: a gateway's database
 may be a different database. SQLite also needs appropriate access to the
 database directory when it creates journal files. Wait for active clients to
