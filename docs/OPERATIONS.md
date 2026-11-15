@@ -26,6 +26,10 @@ installed versions are preserved. A failed native asset download must not
 replace the working executable. A live old executable can remain until it is
 safe to retire; it is an active runtime, not disposable cache.
 
+To stop managing an unwanted tool on a device, remove its identifier from that
+device's `tools` list. Normal maintenance does not reinstall missing tools;
+`update --install-missing` requires an explicit `--tool` selection.
+
 Version and metadata probes have finite deadlines. Supported Linux and Windows
 vendor mutations wait for their owned process trees to finish naturally;
 scheduler deadlines do not interrupt them. Generic macOS package-manager
