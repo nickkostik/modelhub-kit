@@ -132,6 +132,24 @@ does not modify native harness configuration. Changed shared client settings
 wait until the client is idle; an unknown process inventory also queues changes.
 Native schema discovery reads metadata rather than launching GUI applications.
 
+## Optional SSH tunnel retries
+
+For systemd 254 or newer, the example
+[`reverse-tunnel-backoff.conf`](../examples/systemd/reverse-tunnel-backoff.conf)
+adds exponential backoff to an existing group of SSH tunnel units. Install it
+under the matching unit prefix, then reload the systemd manager. For example,
+units named `example-tunnel-*.service` use:
+
+```sh
+sudo install -D -m 0644 examples/systemd/reverse-tunnel-backoff.conf \
+  /etc/systemd/system/example-tunnel-.service.d/50-retry.conf
+sudo systemctl daemon-reload
+```
+
+The reload does not restart active connections. Retry continues while a host
+is unavailable, with a maximum delay of ten minutes. This example does not
+create or enable a tunnel.
+
 ## Cache budget
 
 ```sh
