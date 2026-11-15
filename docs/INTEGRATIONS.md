@@ -56,6 +56,14 @@ exact official package and version metadata; this does not adopt ownership or
 authorize an update of that installation. `client_versions` is an explicit operator override for a reviewed
 schema, not a request to update a package.
 
+Local MCP packages with native dependencies must match the target device's
+operating system and CPU architecture. Install those dependencies on the target
+device rather than copying a compiled package directory from another machine.
+For SQLite servers, retain the configured database path: a gateway's database
+may be a different database. SQLite also needs appropriate access to the
+database directory when it creates journal files. Wait for active clients to
+finish before replacing their runtime.
+
 ## Providers and reasoning
 
 A provider consumes one configured, validated last-good catalog source:
