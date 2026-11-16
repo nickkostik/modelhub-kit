@@ -280,6 +280,11 @@ def integrate(config, home, state, client, apply=False):
     paths = {'codex': '.codex/config.toml', 'claude': '.claude.json', 'opencode': '.config/opencode/opencode.json',
              'cursor': '.cursor/mcp.json', 'qwen': '.qwen/settings.json', 'copilot': '.copilot/mcp-config.json',
              'muse': '.config/muse/settings.json', 'omp': '.omp/agent/mcp.json'}
+    opencode_version = None
+    if client == 'opencode':
+        opencode_version = version_parts(native_version(config, home, state, client))
+        if not opencode_version or opencode_version[0] not in (1, 2):
+            return queued(client, 'unknown-opencode-mcp-schema-version')
     if client in ('qwen', 'copilot'):
         version = version_parts(native_version(config, home, state, client))
         if not version or version[0] not in (0, 1):
@@ -317,6 +322,11 @@ def integrate(config, home, state, client, apply=False):
             result = owned_toml(path, receipt_file, '\n'.join(lines), {'mcp_servers': definitions}, True)
     else:
         field = 'mcp' if client == 'opencode' else 'mcpServers'
+        fields = ('mcp', 'servers') if client == 'opencode' and opencode_version[0] == 2 else (field,)
+        if client == 'opencode' and (receipt_file.exists() or receipt_file.is_symlink()):
+            receipt = json.loads(read_client(receipt_file) or '{}')
+            if isinstance(receipt, dict) and receipt.get('field', list(fields)) != list(fields):
+                return queued(client, 'opencode-mcp-schema-migration-required')
         if client == 'muse':
             version = version_parts(native_version(config, home, state, client))
             if not version or version[:2] != (1, 3):
@@ -333,7 +343,8 @@ def integrate(config, home, state, client, apply=False):
                 if client == 'copilot' and item['env_names']:
                     return queued(client, 'copilot-stdio-environment-interpolation-unverified')
                 if client == 'opencode':
-                    value = {'type': 'local', 'command': [item['command'], *item['args']], 'enabled': True, 'environment': {n: '{env:' + n + '}' for n in item['env_names']}}
+                    value = {'type': 'local', 'command': [item['command'], *item['args']], 'environment': {n: '{env:' + n + '}' for n in item['env_names']}}
+                    value.update({'disabled': False} if opencode_version[0] == 2 else {'enabled': True})
                 else:
                     value = {'command': item['command'], 'args': item['args']}
                     value['env'] = {n: '${env:' + n + '}' if client in ('devin', 'cursor') else '${' + n + '}' for n in item['env_names']}
@@ -347,7 +358,8 @@ def integrate(config, home, state, client, apply=False):
                 continue
             value = {'url': item['url']}
             if client == 'opencode':
-                value.update(type='remote', enabled=True)
+                value.update(type='remote')
+                value.update({'disabled': False} if opencode_version[0] == 2 else {'enabled': True})
             elif client in ('claude', 'copilot', 'omp'):
                 value['type'] = 'http'
                 if client == 'copilot':
@@ -367,7 +379,7 @@ def integrate(config, home, state, client, apply=False):
                 if client == 'opencode':
                     value['oauth'] = False
             rendered[name] = value
-        result = native_json(client, path, receipt_file, (field,), rendered, apply)
+        result = native_json(client, path, receipt_file, fields, rendered, apply)
     if result['status'] == 'no-configured-entries':
         result['status'] = 'no-configured-servers'
     return {'client': client, **result, 'agentsStarted': 0}

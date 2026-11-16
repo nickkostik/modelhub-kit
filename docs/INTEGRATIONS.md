@@ -31,7 +31,7 @@ depend on one machine's local service.
 | --- | --- |
 | Codex | `.codex/config.toml`, receipt-owned `mcp_servers` block |
 | Claude Code | `.claude.json`, `mcpServers` |
-| OpenCode | `.config/opencode/opencode.json`, `mcp` local/remote definitions |
+| OpenCode | `.config/opencode/opencode.json`; version 1 uses `mcp`, version 2 uses `mcp.servers` |
 | Oh My Pi | `.omp/agent/mcp.json` or the active profile's `agent/mcp.json`, `mcpServers` |
 | Cursor | `.cursor/mcp.json`, `mcpServers` |
 | Qwen Code | `.qwen/settings.json`, `mcpServers`, HTTP `httpUrl` |
@@ -61,6 +61,10 @@ agents. Existing npm installs can be recognized by their actual resolved command
 exact official package and version metadata; this does not adopt ownership or
 authorize an update of that installation. `client_versions` is an explicit operator override for a reviewed
 schema, not a request to update a package.
+
+OpenCode 2 uses `disabled` rather than version 1's `enabled`. If a kit receipt
+still owns entries in the other schema, integration queues the migration instead
+of moving or replacing those entries without an explicit review.
 
 Local MCP packages with native dependencies must match the target device's
 operating system and CPU architecture. Install those dependencies on the target
