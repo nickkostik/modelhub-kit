@@ -111,7 +111,11 @@ def process_inventory():
     else:
         command = ['ps', '-axww', '-o', 'pid=', '-o', 'ppid=', '-o', 'command=']
     try:
-        value = run(command, timeout=15)
+        # A normal macOS process list can exceed the generic 64 KiB output
+        # budget. Keep a finite complete snapshot for idle decisions instead
+        # of treating every busy desktop as an unknown runtime.
+        options = {'output_limit': 4 * 1024**2} if sys.platform == 'darwin' else {}
+        value = run(command, timeout=15, **options)
         if (isinstance(value, dict) and os.name != 'nt' and sys.platform.startswith('linux')
                 and value.get('exit') == 0 and value.get('outputTruncated') is True
                 and value.get('timedOut') is False):

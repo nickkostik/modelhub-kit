@@ -299,11 +299,13 @@ class WindowsJob:
             self.handle = None
 
 
-def run(argv, *, env=None, timeout=60, input_data=None):
+def run(argv, *, env=None, timeout=60, input_data=None, output_limit=65536):
     """Bound our own child; never search for or terminate other applications."""
     if input_data is not None and (not isinstance(input_data, bytes) or len(input_data) > 32 * 1024**2):
         raise GuardError('bounded-byte-input-required')
-    chunks = deque(maxlen=16)
+    if type(output_limit) is not int or not 0 < output_limit <= 8 * 1024**2:
+        raise GuardError('bounded-output-limit-required')
+    chunks = deque(maxlen=(output_limit + 4095) // 4096)
     size = [0]
     sent = [0]
     input_failed = [False]
@@ -391,7 +393,8 @@ def run(argv, *, env=None, timeout=60, input_data=None):
                     raise GuardError('maintenance-input-still-exiting')
         reader.join(timeout=2)
         result = {'exit': child.returncode, 'timedOut': timed_out,
-                  'output': b''.join(tuple(chunks)).decode('utf-8', errors='replace'), 'outputTruncated': size[0] > 65536}
+                  'output': b''.join(tuple(chunks))[-output_limit:].decode('utf-8', errors='replace'),
+                  'outputTruncated': size[0] > output_limit}
         if input_data is not None:
             result.update(inputSent=sent[0], inputFailed=input_failed[0])
         return result
