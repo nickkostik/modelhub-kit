@@ -35,24 +35,31 @@ def tools():
     return json.loads(pathlib.Path(__file__).with_name('tools.json').read_text())
 
 
-def npm_native_metadata(command, definition):
+def npm_native_metadata(command, definition, *, allow_macos_opencode_hardlink=False):
     """Read an exact npm bin's metadata; this never grants update ownership."""
     if not command or (os.name == 'nt' and pathlib.Path(command).suffix.lower() in ('.cmd', '.ps1', '.bat')):
         return None
     native = pathlib.Path(command).resolve(strict=True)
     owners = {0, os.getuid()} if os.name != 'nt' else set()
 
-    def checked(path, directory=False):
+    def checked(path, directory=False, *, native_command=False):
         value = path.lstat()
         if path.is_symlink() or path.resolve() != path or not (stat.S_ISDIR(value.st_mode) if directory else stat.S_ISREG(value.st_mode)):
             raise GuardError('unverified-npm-metadata-path')
         if os.name != 'nt' and (value.st_uid not in owners or value.st_mode & 0o022):
             raise GuardError('unverified-npm-metadata-owner')
-        if not directory and value.st_nlink != 1:
+        # The official macOS OpenCode package hard-links its selected binary
+        # to its platform package. Permit that only for read-only discovery;
+        # mutation callers retain the stricter single-link requirement.
+        read_only_opencode_link = (native_command and allow_macos_opencode_hardlink
+                                  and platform.system() == 'Darwin'
+                                  and definition.get('package') == '@opencode/cli'
+                                  and value.st_nlink == 2)
+        if not directory and value.st_nlink != 1 and not read_only_opencode_link:
             raise GuardError('unverified-npm-metadata-link')
         return value
 
-    checked(native)
+    checked(native, native_command=True)
     for root in list(native.parents)[:8]:
         metadata = root / 'package.json'
         if not metadata.exists():
@@ -121,7 +128,7 @@ def describe(name, definition, state, home=None):
                 if isinstance(value, dict) and value.get('name') == definition['package'] and isinstance(value.get('version'), str) and SEMVER.fullmatch(value['version']):
                     result.update(present=True, owned=True, version=value['version'], status='owned-npm-installation')
             if 'version' not in result:
-                value = npm_native_metadata(command, definition)
+                value = npm_native_metadata(command, definition, allow_macos_opencode_hardlink=True)
                 if value:
                     result.update(present=True, owned=None, version=value['version'], status='native-npm-metadata-verified')
     except (GuardError, OSError, ValueError, KeyError, TypeError):

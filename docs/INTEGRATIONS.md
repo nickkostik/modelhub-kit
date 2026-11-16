@@ -65,6 +65,8 @@ schema, not a request to update a package.
 OpenCode 2 uses `disabled` rather than version 1's `enabled`. If a kit receipt
 still owns entries in the other schema, integration queues the migration instead
 of moving or replacing those entries without an explicit review.
+Read-only version discovery recognizes the official macOS OpenCode package's
+two-link native executable; this does not grant permission to update it.
 
 Local MCP packages with native dependencies must match the target device's
 operating system and CPU architecture. Install those dependencies on the target
