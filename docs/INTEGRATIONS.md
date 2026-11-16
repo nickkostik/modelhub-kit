@@ -32,11 +32,17 @@ depend on one machine's local service.
 | Codex | `.codex/config.toml`, receipt-owned `mcp_servers` block |
 | Claude Code | `.claude.json`, `mcpServers` |
 | OpenCode | `.config/opencode/opencode.json`, `mcp` local/remote definitions |
+| Oh My Pi | `.omp/agent/mcp.json` or the active profile's `agent/mcp.json`, `mcpServers` |
 | Cursor | `.cursor/mcp.json`, `mcpServers` |
 | Qwen Code | `.qwen/settings.json`, `mcpServers`, HTTP `httpUrl` |
 | Copilot CLI | `.copilot/mcp-config.json`, local/http definitions |
 | Devin CLI | Before v3000.3: user `config.json`; v3000.3+: dedicated `mcp_config.json` |
 | Muse Code 1.3 | Existing `mcpServers` or legacy `mcp_servers`; never both |
+
+Oh My Pi uses `OMP_PROFILE` (or `PI_PROFILE`), `PI_CONFIG_DIR`, and
+`PI_CODING_AGENT_DIR` to select its active user configuration. Named profiles
+have separate receipts. OMP expands `${NAME}` references in stdio environments
+and HTTP headers; explicit disabled entries and unrelated servers are preserved.
 
 Devin's user directory is `.config/devin` on Unix and `%APPDATA%\devin` on
 Windows. Its header references use `${env:NAME}`. Muse's legacy HTTP transport

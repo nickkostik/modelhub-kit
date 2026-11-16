@@ -10,7 +10,7 @@ import tomllib
 import urllib.parse
 from .core import GuardError, atomic_json, atomic_text, protected, read_json
 
-MCP_CLIENTS = ('codex', 'claude', 'opencode', 'cursor', 'qwen', 'copilot', 'devin', 'muse')
+MCP_CLIENTS = ('codex', 'claude', 'opencode', 'cursor', 'qwen', 'copilot', 'devin', 'muse', 'omp')
 SUPPORTED_CLIENTS = MCP_CLIENTS
 SAFE_ID = re.compile(r'[a-z][a-z0-9_-]{0,63}')
 ENV_NAME = re.compile(r'[A-Z][A-Z0-9_]{0,127}')
@@ -224,6 +224,7 @@ def native_idle(client):
         'opencode': r'(?:opencode|opencode-ai|@opencode[/\\]cli)',
         'qwen': r'(?:qwen|@qwen-code[/\\]qwen-code)',
         'pi': r'(?:pi|@earendil-works[/\\]pi-coding-agent)',
+        'omp': r'(?:omp|oh-my-pi|@oh-my-pi[/\\]pi-coding-agent)',
         'copilot': r'(?:copilot|@github[/\\]copilot)',
         'devin': r'(?:devin(?:-desktop|-cli)?|windsurf)',
         'cursor': r'(?:cursor|cursor-agent)',
@@ -239,17 +240,46 @@ def native_json(client, path, receipt_file, fields, rendered, apply=False):
     return owned_json(path, receipt_file, fields, rendered, True) if apply else plan
 
 
+def omp_mcp_path(home):
+    """Resolve OMP's active user profile without starting the agent."""
+    config_name = os.environ.get('PI_CONFIG_DIR') or '.omp'
+    config_part = pathlib.Path(config_name)
+    if (any(c in config_name for c in '\r\n\0') or config_part.is_absolute()
+            or '..' in config_part.parts):
+        raise GuardError('unsafe-omp-config-root')
+    root = pathlib.Path(home) / config_part
+    profile = (os.environ.get('OMP_PROFILE') if 'OMP_PROFILE' in os.environ
+               else os.environ.get('PI_PROFILE', '')).strip()
+    if profile and profile != 'default':
+        if (not re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,63}', profile)
+                or profile.endswith('.')
+                or re.match(r'(?i)^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)', profile)):
+            raise GuardError('invalid-omp-profile')
+        return root / 'profiles' / profile / 'agent' / 'mcp.json'
+    override = os.environ.get('PI_CODING_AGENT_DIR')
+    if override:
+        if any(c in override for c in '\r\n\0'):
+            raise GuardError('unsafe-omp-agent-directory')
+        return pathlib.Path(os.path.abspath(override)) / 'mcp.json'
+    return root / 'agent' / 'mcp.json'
+
+
 def integrate(config, home, state, client, apply=False):
     if client not in MCP_CLIENTS:
         return queued(client, 'unsupported-native-mcp-schema')
     definitions = servers(config)
     home, state = pathlib.Path(home), pathlib.Path(state)
     receipt_file = state / ('integration-' + client + '.json')
+    omp_path = None
+    if client == 'omp':
+        omp_path = omp_mcp_path(home)
+        identity = hashlib.sha256(str(omp_path).encode('utf-8')).hexdigest()[:20]
+        receipt_file = state / ('integration-omp-' + identity + '.json')
     if not definitions and not receipt_file.exists() and not receipt_file.is_symlink():
         return {'client': client, 'status': 'no-configured-servers', 'changed': False, 'agentsStarted': 0}
     paths = {'codex': '.codex/config.toml', 'claude': '.claude.json', 'opencode': '.config/opencode/opencode.json',
              'cursor': '.cursor/mcp.json', 'qwen': '.qwen/settings.json', 'copilot': '.copilot/mcp-config.json',
-             'muse': '.config/muse/settings.json'}
+             'muse': '.config/muse/settings.json', 'omp': '.omp/agent/mcp.json'}
     if client in ('qwen', 'copilot'):
         version = version_parts(native_version(config, home, state, client))
         if not version or version[0] not in (0, 1):
@@ -268,6 +298,8 @@ def integrate(config, home, state, client, apply=False):
             path = pathlib.Path(os.environ['CLAUDE_CONFIG_DIR']) / '.claude.json'
         elif client in ('opencode', 'muse'):
             path = pathlib.Path(os.environ.get('XDG_CONFIG_HOME', home / '.config')) / client / path.name
+        elif client == 'omp':
+            path = omp_path
     if client == 'codex':
         lines = []
         for name, item in definitions.items():
@@ -307,6 +339,8 @@ def integrate(config, home, state, client, apply=False):
                     value['env'] = {n: '${env:' + n + '}' if client in ('devin', 'cursor') else '${' + n + '}' for n in item['env_names']}
                     if client == 'copilot':
                         value.update(type='local', tools=['*'])
+                    elif client == 'omp':
+                        value['type'] = 'stdio'
                     elif client == 'muse':
                         value['type' if field == 'mcpServers' else 'transport'] = 'stdio'
                 rendered[name] = value
@@ -314,7 +348,7 @@ def integrate(config, home, state, client, apply=False):
             value = {'url': item['url']}
             if client == 'opencode':
                 value.update(type='remote', enabled=True)
-            elif client in ('claude', 'copilot'):
+            elif client in ('claude', 'copilot', 'omp'):
                 value['type'] = 'http'
                 if client == 'copilot':
                     value['tools'] = ['*']
