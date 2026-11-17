@@ -54,6 +54,12 @@ Add the command directory to your user PATH if it is not already present. The
 installer does not alter shell profiles, system PATH, an npm prefix, or an
 existing runtime manager. You can also use the command's full path.
 
+For zsh, non-login SSH commands read `.zshenv` rather than `.zprofile`. If your
+Node and CLI commands are in `~/.local/bin`, include that directory in the PATH
+set by `.zshenv` so those commands can find Node in SSH sessions as well. Keep
+any existing profile contents; the installer does not edit them. See the
+[zsh startup-file documentation](https://zsh.sourceforge.io/Doc/Release/Files.html).
+
 ## Prerequisites
 
 The wrappers detect compatible Python before making any changes. If Python is

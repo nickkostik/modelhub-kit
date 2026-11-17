@@ -225,6 +225,15 @@ def node_prerequisite(allow_install: bool = False) -> dict:
     version = _node_version(executable)
     if version and int(version.split(".")[0]) >= 22:
         return {"ready": True, "version": version, "changed": False, "executable": executable}
+    # SSH and other non-login shells may omit the user's bin directory from
+    # PATH even when a compatible Node is already installed there.
+    if os.name != "nt":
+        local_node = str(Path.home() / ".local/bin/node")
+        if local_node != executable:
+            local_version = _node_version(local_node)
+            if local_version and int(local_version.split(".")[0]) >= 22:
+                return {"ready": True, "version": local_version, "changed": False, "executable": local_node}
+            version = version or local_version
     latest = _official_node_lts()
     manager = None
     if latest is None:
