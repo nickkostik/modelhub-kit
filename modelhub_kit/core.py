@@ -12,6 +12,7 @@ import pathlib
 import platform
 import re
 import signal
+import ssl
 import stat
 import subprocess
 import tempfile
@@ -535,7 +536,15 @@ def http_json(url, headers=None, limit=8 * 1024 * 1024):
         raise GuardError('https-without-embedded-credentials-required')
     request = urllib.request.Request(url, headers={'Accept': 'application/json', 'Accept-Encoding': 'identity',
                                                   'User-Agent': 'ModelHub-Kit/' + __version__, **(headers or {})})
-    opener = urllib.request.build_opener(SameOriginRedirect())
+    tls = ssl.create_default_context()
+    if platform.system() == 'Darwin':
+        roots = pathlib.Path('/private/etc/ssl/cert.pem')
+        if roots.exists():
+            info = roots.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+                raise GuardError('unprotected-system-tls-roots')
+            tls.load_verify_locations(cafile=str(roots))
+    opener = urllib.request.build_opener(SameOriginRedirect(), urllib.request.HTTPSHandler(context=tls))
     for attempt in range(len(_METADATA_RETRY_DELAYS) + 1):
         try:
             response = opener.open(request, timeout=30)
