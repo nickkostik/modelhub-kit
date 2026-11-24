@@ -185,7 +185,11 @@ the Codex process that uses the catalog to load changed context limits; writing
 the catalog alone does not update a running process.
 
 OpenCode receives separate owned providers, exact IDs, supported limits and
-all advertised effort variants. Existing wire variant objects remain intact.
+all advertised effort variants. OpenCode 2 uses its [native provider
+packages](https://opencode.ai/docs/providers/) in `providers` and the
+variant array with per-model settings. OpenCode 1 keeps its own
+`provider` entries. Each format has its own ownership receipt so changing
+versions preserves existing user bindings and session model IDs.
 Known context does not require a known output ceiling: OpenCode's required
 output field receives its [native `0` marker for the client's own output default](https://github.com/anomalyco/opencode/blob/v1.2.0/packages/opencode/src/provider/transform.ts#L710).
 The source catalog retains its missing or null output, and an input limit is
@@ -203,10 +207,9 @@ queued for review. Native provider behavior still depends on its own API.
 
 ### Native Google in OpenCode
 
-`google-generative-ai` projects through OpenCode's `@ai-sdk/google` provider,
-with the configured native Google API base URL. This path requires a verified
-OpenCode 1.x version at least 1.2, whose bundled Google SDK supports the reviewed
-options. Older, unknown and unreviewed major versions queue. Other clients queue
+`google-generative-ai` uses OpenCode 2's built-in `@opencode/ai/providers/google`
+or the bundled `@ai-sdk/google` provider in verified OpenCode 1.2 and up.
+Both use the configured native Google API base URL. Other clients queue
 this protocol instead of treating a Google endpoint as OpenAI-compatible. The
 kit does not add a protocol gateway.
 

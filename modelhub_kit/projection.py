@@ -84,7 +84,7 @@ def receipt_entries(receipt_file, path, fields):
     names = receipt['entries']
     if fields in (('provider',), ('providers',), ('agents', 'providers'), ('providerInstances',)):
         if any(not (name.startswith('kit-') and SAFE_ID.fullmatch(name[4:])
-                    or fields == ('provider',) and name.startswith(OPENCODE_GO_PREFIX)
+                    or fields in (('provider',), ('providers',)) and name.startswith(OPENCODE_GO_PREFIX)
                     and SAFE_ID.fullmatch(name[len(OPENCODE_GO_PREFIX):])) for name in names):
             raise GuardError('unrecognized-native-provider-receipt-review-required')
     elif not fields and set(names) - {'models'} or len(fields) == 3 and fields[:2] == ('agents', 'providers') and set(names) - {'additionalModels'}:
@@ -309,6 +309,30 @@ def opencode_model(row, protocol):
     return value
 
 
+def opencode_v2_model(row, protocol):
+    legacy = opencode_model(row, protocol)
+    value = {'modelID': legacy['id'], 'name': legacy['name']}
+    if 'limit' in legacy:
+        value['limit'] = legacy['limit']
+    capabilities = {}
+    if 'input_modalities' in row:
+        capabilities['input'] = row['input_modalities']
+    tools = row.get('capabilities', {})
+    if isinstance(tools, dict) and isinstance(tools.get('functionCalling'), bool):
+        capabilities['tools'] = tools['functionCalling']
+    reasoning = row.get('reasoning')
+    variants = legacy.get('variants', {})
+    if variants or reasoning is True or isinstance(reasoning, dict) and reasoning.get('supported') is True:
+        capabilities['reasoning'] = {'supported': True}
+    if capabilities:
+        value['capabilities'] = capabilities
+    if variants:
+        value['variants'] = [{'id': name, 'settings': options} for name, options in variants.items()]
+        default = reasoning_default(list(variants), row.get('default_reasoning_level', row.get('defaultReasoningEffort')))
+        value['settings'] = legacy.get('options', variants.get(default, {}))
+    return value
+
+
 def pi_model(row):
     budgets = catalog.model_budgets(row)
     levels = efforts(row)
@@ -366,9 +390,11 @@ def project(config, home, state, client, apply=False):
         return queued(client, 'unsupported-native-model-projection')
     home, state = pathlib.Path(home), pathlib.Path(state)
     receipt = state / ('projection-' + client + '.json')
+    opencode_v2_receipt = state / 'projection-opencode-v2.json'
     try:
         previous = (receipt_names(state, 'projection-codex-catalog-') | receipt_names(state, 'projection-codex-profile-')) if client == 'codex' else receipt_names(state, 'projection-paseo-') if client == 'paseo' else set()
-        if not config.get('model_providers') and not previous and not read_client(receipt):
+        v2_owned = client == 'opencode' and bool(read_client(opencode_v2_receipt))
+        if not config.get('model_providers') and not previous and not v2_owned and not read_client(receipt):
             return {'client': client, 'status': 'no-configured-providers', 'changed': False}
     except GuardError as error:
         return queued(client, str(error))
@@ -383,34 +409,57 @@ def project(config, home, state, client, apply=False):
         return queued(client, 'google-native-provider-requires-opencode')
     native = native_version(config, home, state, client)
     version = version_parts(native)
-    if version is None or client != 'codex' and version[0] not in (0, 1):
+    accepted = (1, 2) if client == 'opencode' else (0, 1)
+    if version is None or client != 'codex' and version[0] not in accepted:
         return queued(client, 'unknown-native-model-provider-version')
     if google and version < (1, 2):
         return queued(client, 'google-native-provider-requires-verified-opencode-version')
     changed_before_error = False
     try:
         if client == 'opencode':
-            packages = {'openai-responses': '@ai-sdk/openai', 'openai-completions': '@ai-sdk/openai-compatible',
-                        'anthropic-messages': '@ai-sdk/anthropic', 'google-generative-ai': '@ai-sdk/google'}
+            v2 = version[0] == 2
+            packages = ({
+                'openai-responses': '@opencode/ai/providers/openai-compatible/responses',
+                'openai-completions': '@opencode/ai/providers/openai-compatible',
+                'anthropic-messages': '@opencode/ai/providers/anthropic',
+                'google-generative-ai': '@opencode/ai/providers/google',
+            } if v2 else {
+                'openai-responses': '@ai-sdk/openai', 'openai-completions': '@ai-sdk/openai-compatible',
+                'anthropic-messages': '@ai-sdk/anthropic', 'google-generative-ai': '@ai-sdk/google',
+            })
             path = pathlib.Path(os.environ.get('XDG_CONFIG_HOME', home / '.config')) / 'opencode/opencode.json'
-            owned = receipt_entries(receipt, path, ('provider',))
+            fields = ('providers',) if v2 else ('provider',)
+            legacy_owned = receipt_entries(receipt, path, ('provider',)) if v2 else {}
+            active_receipt = opencode_v2_receipt if v2 else receipt
+            owned = receipt_entries(active_receipt, path, fields)
             rendered = {}
             for name, provider in selected.items():
                 go = opencode_go_google(provider)
                 go_name = OPENCODE_GO_PREFIX + name.removeprefix('kit-')
-                if go and name in owned or not go and go_name in owned:
+                if go and (name in owned or name in legacy_owned) or not go and (go_name in owned or go_name in legacy_owned):
                     raise GuardError('existing-opencode-provider-binding-review-before-protocol-change')
                 native_name = go_name if go else name
                 options = {'baseURL': provider['base_url'], 'apiKey': '{env:' + provider['credential_env'] + '}'}
+                headers = None
                 if go:
                     # The native opencode* branch supplies the actual conversation
                     # session header; never synthesize a fixed or per-request ID.
-                    options['headers'] = {'Authorization': 'Bearer {env:' + provider['credential_env'] + '}',
-                                          'User-Agent': 'opencode/' + native.lstrip('v')}
-                rendered[native_name] = {'name': native_name, 'npm': packages[provider['protocol']], 'options': options,
-                                         'models': {row['id']: opencode_model(row, provider['protocol']) for row in provider['rows']}}
-            retirement_guard(json.loads((read_client(path) or '{}').lstrip('\ufeff')), ('provider',), owned, rendered)
-            result = native_json(client, path, receipt, ('provider',), rendered, apply)
+                    headers = {'Authorization': 'Bearer {env:' + provider['credential_env'] + '}',
+                               'User-Agent': 'opencode/' + native.lstrip('v')}
+                protocol = provider['protocol']
+                if v2:
+                    item = {'name': native_name, 'package': packages[protocol], 'settings': options,
+                            'models': {row['id']: opencode_v2_model(row, protocol) for row in provider['rows']}}
+                    if headers:
+                        item['headers'] = headers
+                else:
+                    if headers:
+                        options['headers'] = headers
+                    item = {'name': native_name, 'npm': packages[protocol], 'options': options,
+                            'models': {row['id']: opencode_model(row, protocol) for row in provider['rows']}}
+                rendered[native_name] = item
+            retirement_guard(json.loads((read_client(path) or '{}').lstrip('\ufeff')), fields, owned, rendered)
+            result = native_json(client, path, active_receipt, fields, rendered, apply)
         elif client == 'pi':
             rendered = {name: {'baseUrl': p['base_url'].rstrip('/')[:-3] if p['protocol'] == 'anthropic-messages' and p['base_url'].rstrip('/').endswith('/v1') else p['base_url'], 'api': p['protocol'], 'apiKey': '${' + p['credential_env'] + '}',
                         'models': [pi_model(r) for r in p['rows']]} for name, p in selected.items()}
@@ -430,7 +479,11 @@ def project(config, home, state, client, apply=False):
                 return queued(client, 'register-matching-owned-acp-provider-first')
             native_file = pathlib.Path(os.environ.get('XDG_CONFIG_HOME', home / '.config')) / 'opencode/opencode.json'
             native_doc = json.loads((read_client(native_file) or '{}').lstrip('\ufeff'))
-            native_proof = read_json(state / 'projection-opencode.json', {'entries': {}}).get('entries', {})
+            opencode_version = version_parts(native_version(config, home, state, 'opencode'))
+            v2 = bool(opencode_version and opencode_version[0] == 2)
+            provider_field = 'providers' if v2 else 'provider'
+            native_proof = receipt_entries(opencode_v2_receipt if v2 else state / 'projection-opencode.json',
+                                           native_file, (provider_field,))
             plans = []
             for name in sorted(previous - set(selected)):
                 file = state / ('projection-paseo-' + name + '.json')
@@ -443,9 +496,9 @@ def project(config, home, state, client, apply=False):
             for name, provider in selected.items():
                 agent = config.get('acp_agents', {}).get(name.removeprefix('kit-'), {})
                 binary = pathlib.Path(agent.get('command', '')).name.lower().removesuffix('.exe').removesuffix('.cmd')
-                native_provider = native_doc.get('provider', {}).get(name, {})
+                native_provider = native_doc.get(provider_field, {}).get(name, {})
                 expected_options = {'baseURL': provider['base_url'], 'apiKey': '{env:' + provider['credential_env'] + '}'}
-                if binary != 'opencode' or agent.get('args', []) != ['acp'] or name not in native_proof or native_provider.get('options') != expected_options:
+                if binary != 'opencode' or agent.get('args', []) != ['acp'] or name not in native_proof or native_provider.get('settings' if v2 else 'options') != expected_options:
                     return queued(client, 'verified-native-acp-provider-model-binding-required')
                 models_out = []
                 for row in provider['rows']:
@@ -454,10 +507,12 @@ def project(config, home, state, client, apply=False):
                         return queued(client, 'verified-native-acp-provider-model-binding-required')
                     prefix = name + '/' + row['id']
                     models_out.append({'id': prefix, 'label': label(row)})
+                    variants = native_model.get('variants', [] if v2 else {})
+                    variant_ids = {entry['id'] for entry in variants} if v2 else variants
                     for effort in efforts(row):
                         if '/' in effort or row['id'] + '/' + effort in native_provider.get('models', {}):
                             return queued(client, 'ambiguous-native-acp-model-variant-id')
-                        if effort not in native_model.get('variants', {}):
+                        if effort not in variant_ids:
                             return queued(client, 'native-acp-effort-variant-missing')
                         # OpenCode ACP parses provider/model/variant exactly.
                         # An opaque generic agent's model IDs must never be guessed.
