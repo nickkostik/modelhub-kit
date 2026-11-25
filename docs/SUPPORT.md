@@ -29,6 +29,11 @@ has a different platform matrix. Native Windows OMP/Droid maintenance remains a
 queued native-channel task rather than being misrouted through another product.
 Hermes is not registered or reinstalled.
 
+On Oracle UEK8, ModelHub Kit checks the official Linux T3 runtime's ELF headers
+before installing or reporting its launcher current. A release that exceeds the
+kernel's note segment limit stays queued and the existing launcher is retained.
+[Oracle UEK issue](https://github.com/oracle/linux-uek/issues/46)
+
 The three portable native terminal adapters use kit-owned version directories and
 one current ownership receipt. They preserve an unrelated existing installation;
 a version string or command filename alone does not authorize replacing it.
