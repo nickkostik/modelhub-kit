@@ -20,9 +20,14 @@ specific unmet guard; it does not mean that the vendor lacks that operating syst
 | `omp` | Existing recognized standalone macOS installation, with official GitHub/build-service SHA-256 metadata. |
 | `droid` | Existing recognized Unix native installation, with Factory's official SHA-256. The vendor process-killing installer is never run. |
 
-Generic npm mutations use descendant custody on Linux and Windows. On macOS,
-discovery remains available, but those mutations queue until a suitable native
-backend exists. The separate verified atomic native adapters remain available.
+Linux and Windows use descendant custody for npm updates. On macOS the kit can
+install explicitly selected npm tools or update its own launchers. It expands
+official registry data in a temporary directory using the macOS system sandbox,
+keeps optional platform dependencies, and checks the exact command before
+switching the launcher. Packages that still require vendor lifecycle scripts or
+an unavailable native dependency queue for their official installation channel.
+Existing installations owned by another updater keep that ownership. A pending
+verified promotion resumes without a second download.
 
 Hermes can be selected explicitly. Install and update it through its official
 publisher channel. The kit can discover its command without running an agent.

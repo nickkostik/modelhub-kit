@@ -123,6 +123,11 @@ def describe(name, definition, state, home=None):
         elif manager == 'publisher-managed' and command:
             result['status'] = 'publisher-managed'
         elif not manager:
+            if platform.system() == 'Darwin':
+                from .native_helpers.macos_npm import installed_receipt
+                generation = installed_receipt(name, definition, home, pathlib.Path(state), command)
+                if generation:
+                    return dict(result, present=True, owned=True, version=generation['version'], status='owned-npm-installation')
             receipt = owned_installation(state, name)
             if receipt:
                 metadata = package_file(pathlib.Path(receipt['prefix']), definition['package'])
@@ -344,6 +349,21 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
                 value = json.loads(result['output'])
                 results.append({'tool': name, 'status': 'updated' if value.get('changed', value.get('installed')) else 'current'})
             continue
+        if platform.system() == 'Darwin':
+            from .native_helpers.macos_npm import installed_receipt, reconcile
+            try:
+                home, _, _ = locations()
+                root = pathlib.Path(state)
+                pending = os.path.lexists(root / 'npm-releases' / name / '.prepare')
+                if pending or managed or installed_receipt(name, definition, home, root, command) or not command and install_missing:
+                    results.append(reconcile(name, definition, home, root, command, legacy=managed,
+                                             install_missing=install_missing, dry_run=dry_run, repair=repair))
+                    continue
+            except (GuardError, OSError, ValueError, KeyError, TypeError) as error:
+                results.append({'tool': name, 'status': 'queued' if isinstance(error, GuardError) else 'update-failed',
+                                'reason': str(error) if isinstance(error, GuardError) else 'macos-package-check-failed',
+                                'installed': False})
+                continue
         if not command and not install_missing:
             results.append({'tool': name, 'status': 'not-installed', 'installed': False})
             continue
