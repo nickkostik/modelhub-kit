@@ -73,6 +73,8 @@ python3 scripts/package-native-release.py --ref "$commit" --target "$target" \
 
 Choose a supported target when cross-compiling. On Windows the binary ends in `.exe`. Build in an isolated workspace and use Rust's path remapping for the source tree, Cargo cache and toolchain paths before publishing artifacts. [Cargo build flags](https://doc.rust-lang.org/cargo/commands/cargo-build.html)
 
+Build the Linux ARM64 bundle on a system or in a container with glibc 2.28. The packager uses `readelf` to reject binaries that require a newer glibc. [GNU readelf documentation](https://sourceware.org/binutils/docs/binutils/readelf.html)
+
 ### Installed paths
 
 | Platform | Application | Command |

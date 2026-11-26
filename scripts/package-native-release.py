@@ -5,10 +5,13 @@ import argparse
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tarfile
+import tempfile
 import zipfile
 
 
@@ -24,6 +27,7 @@ PUBLIC_INSTALL_SOURCE = (
     "LICENSE", "README.md", "AGENTS.md", "docs", "modelhub_kit",
     "scripts/install.py", "scripts/install.sh", "scripts/install.ps1",
 )
+LINUX_ARM64_GLIBC = (2, 28)
 
 
 def matches_machine(image: bytes, system: str, architecture: str) -> bool:
@@ -36,6 +40,28 @@ def matches_machine(image: bytes, system: str, architecture: str) -> bool:
                             else b"\xcf\xfa\xed\xfe\x0c\x00\x00\x01")
     pointer = int.from_bytes(image[60:64], "little")
     return image.startswith(b"MZ") and pointer >= 64 and image[pointer:pointer + 6] == b"PE\x00\x00\x64\x86"
+
+
+def check_native_abi(image: bytes, system: str, architecture: str) -> None:
+    if (system, architecture) != ("linux", "aarch64"):
+        return
+    readelf = shutil.which("readelf") or shutil.which("llvm-readelf") or shutil.which("greadelf")
+    if not readelf:
+        raise ValueError("A readelf implementation is required to verify Linux ARM64 releases")
+    with tempfile.TemporaryDirectory(prefix="modelhub-kit-abi-") as scratch:
+        binary = Path(scratch) / "modelhub-kit-catalog"
+        binary.write_bytes(image)
+        output = subprocess.check_output(
+            [readelf, "--version-info", "--wide", str(binary)], text=True, env=dict(os.environ, LC_ALL="C"),
+        )
+    versions = re.findall(r"\bName: GLIBC_([0-9]+(?:\.[0-9]+)+)\b", output)
+    if not versions:
+        raise ValueError("Linux ARM64 release has no verifiable glibc version requirements")
+    required = max(tuple(map(int, version.split("."))) for version in versions)
+    if required > LINUX_ARM64_GLIBC:
+        version = ".".join(map(str, required))
+        limit = ".".join(map(str, LINUX_ARM64_GLIBC))
+        raise ValueError(f"Linux ARM64 release requires glibc {version}, above the supported baseline {limit}")
 
 
 def pack(repository: Path, ref: str, target: str, binary: Path, output: Path):
@@ -55,6 +81,7 @@ def pack(repository: Path, ref: str, target: str, binary: Path, output: Path):
         image = stream.read(32 * 1024 * 1024 + 1)
     if not 0 < len(image) <= 32 * 1024 * 1024 or identity not in image or not matches_machine(image, system, architecture):
         raise ValueError("The executable does not match the selected source revision and target")
+    check_native_abi(image, system, architecture)
     descriptor = json.dumps({
         "schemaVersion": 1, "version": version, "platform": system, "architecture": architecture,
         "filename": filename, "sha256": hashlib.sha256(image).hexdigest(), "gitCommit": commit,
