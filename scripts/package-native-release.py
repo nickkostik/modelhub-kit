@@ -2,6 +2,7 @@
 """Package a checked public source revision with one prebuilt catalog executable."""
 
 import argparse
+import ast
 import hashlib
 import io
 import json
@@ -82,10 +83,13 @@ def pack(repository: Path, ref: str, target: str, binary: Path, output: Path):
     if not 0 < len(image) <= 32 * 1024 * 1024 or identity not in image or not matches_machine(image, system, architecture):
         raise ValueError("The executable does not match the selected source revision and target")
     check_native_abi(image, system, architecture)
-    descriptor = json.dumps({
-        "schemaVersion": 1, "version": version, "platform": system, "architecture": architecture,
-        "filename": filename, "sha256": hashlib.sha256(image).hexdigest(), "gitCommit": commit,
-    }, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    checksum = hashlib.sha256(image).hexdigest()
+    layout = {}
+    for statement in ast.parse(git("show", commit + ":scripts/install.py")).body:
+        if isinstance(statement, ast.Assign):
+            for symbol in statement.targets:
+                if isinstance(symbol, ast.Name) and symbol.id in ("FILES", "OPTIONAL_FILES"):
+                    layout[symbol.id] = ast.literal_eval(statement.value)
     prefix = f"modelhub-kit-v{version}/"
     archive = git("archive", "--format=tar", "--prefix=" + prefix, commit, *PUBLIC_INSTALL_SOURCE)
     content = io.BytesIO()
@@ -93,6 +97,22 @@ def pack(repository: Path, ref: str, target: str, binary: Path, output: Path):
         members = source.getmembers()
         if any(not (member.isdir() or member.isfile()) for member in members):
             raise ValueError("The selected public source contains a special file")
+        visible = {member.name: member for member in members if member.isfile()}
+        files = {}
+        for relative in layout["FILES"] + layout["OPTIONAL_FILES"]:
+            member = visible.get(prefix + relative)
+            if member is None and relative in layout["OPTIONAL_FILES"]:
+                continue
+            if member is None or not 0 < member.size <= 1024 * 1024:
+                raise ValueError("The application allowlist is incomplete or oversized")
+            with source.extractfile(member) as file:
+                files[relative] = hashlib.sha256(file.read()).hexdigest()
+        descriptor = json.dumps({
+            "schemaVersion": 1, "version": version, "platform": system, "architecture": architecture,
+            "filename": filename, "sha256": checksum, "gitCommit": commit, "files": files,
+        }, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        bundled = ((filename, image, 0o755), ("native/bundle.json", descriptor, 0o644),
+                   ("native/bundle.sha256", checksum.encode() + b"\n", 0o644))
         if system == "windows":
             extension = ".zip"
             with zipfile.ZipFile(content, "w", compression=zipfile.ZIP_DEFLATED) as result:
@@ -100,18 +120,19 @@ def pack(repository: Path, ref: str, target: str, binary: Path, output: Path):
                     if member.isfile():
                         with source.extractfile(member) as file:
                             result.writestr(member.name, file.read())
-                result.writestr(prefix + filename, image)
-                result.writestr(prefix + "native/bundle.json", descriptor)
+                for relative, payload, _ in bundled:
+                    result.writestr(prefix + relative, payload)
         else:
             extension = ".tar.gz"
             with tarfile.open(fileobj=content, mode="w:gz") as result:
                 for member in members:
+                    member.mode = 0o755 if member.isdir() or member.mode & 0o111 else 0o644
                     if member.isfile():
                         with source.extractfile(member) as file:
                             result.addfile(member, file)
                     else:
                         result.addfile(member)
-                for relative, payload, mode in ((filename, image, 0o755), ("native/bundle.json", descriptor, 0o644)):
+                for relative, payload, mode in bundled:
                     member = tarfile.TarInfo(prefix + relative)
                     member.size, member.mode = len(payload), mode
                     result.addfile(member, io.BytesIO(payload))

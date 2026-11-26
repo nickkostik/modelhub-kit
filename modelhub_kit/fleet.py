@@ -86,7 +86,7 @@ def delivery_package(source):
             if relative in required:
                 raise GuardError('unexpected-required-document')
             continue
-        if not re.fullmatch(r'modelhub_kit/(?:[a-z][a-z0-9_]*/)?(?:[a-z_][a-z0-9_]*\.py|tools\.json)', relative):
+        if not re.fullmatch(r'modelhub_kit/(?:[a-z][a-z0-9_]*/)?(?:[a-z_][a-z0-9_]*\.py|tools\.json|default-config\.json|windows-launcher\.cmd)', relative):
             raise GuardError('unsafe-installer-source-allowlist')
         if relative in required or (root / relative).exists() or (root / relative).is_symlink():
             files.add(relative)

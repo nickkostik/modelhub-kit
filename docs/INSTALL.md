@@ -1,22 +1,24 @@
 # Install ModelHub Kit
 
-ModelHub Kit uses Python 3.11 or newer and the standard library. It does not
-need pip packages, a database, a background server, or model credentials to
-install. Node 22 or newer is the minimum for the npm-based tools you choose to
-manage; an existing compatible Node installation is preserved.
+ModelHub Kit's platform bundles include a prebuilt Rust installer and catalog
+command. Install and refresh catalogs without installing Python, Node.js, or a
+Rust toolchain.
+Source installs, tool maintenance, fleet delivery, and integration adapters use
+Python 3.11 or newer and the standard library. The npm tools you choose to
+manage require Node 22 or newer.
 
 ## Choose a release
 
-Download the platform bundle from the [v0.2.4 release](https://github.com/nickkostik/modelhub-kit/releases/tag/v0.2.4) and compare its SHA-256 with `SHA256SUMS` from the same release before extracting it. Choose `linux-x64`, `linux-arm64`, `macos-x64` (Intel), `macos-arm64` (Apple Silicon), or `windows-x64`. The Linux bundles use glibc. The installer verifies the bundled Rust engine's platform and checksum. It keeps that engine in its installation receipt.
+Download the platform bundle from the [v0.2.5 release](https://github.com/nickkostik/modelhub-kit/releases/tag/v0.2.5) and compare its SHA-256 with `SHA256SUMS` from the same release before extracting it. Choose `linux-x64`, `linux-arm64`, `macos-x64` (Intel), `macos-arm64` (Apple Silicon), or `windows-x64`. The Linux bundles use glibc. The wrapper verifies the executable checksum before starting it. Rust verifies the platform, exact payload, and current installation receipt before applying changes.
 
-For a source install, download the [v0.2.4 source ZIP](https://github.com/nickkostik/modelhub-kit/archive/refs/tags/v0.2.4.zip) or clone the tag.
+For a source install, download the [v0.2.5 source ZIP](https://github.com/nickkostik/modelhub-kit/archive/refs/tags/v0.2.5.zip) or clone the tag.
 
 ```sh
-git clone --branch v0.2.4 --depth 1 https://github.com/nickkostik/modelhub-kit.git modelhub-kit-v0.2.4
-cd modelhub-kit-v0.2.4
+git clone --branch v0.2.5 --depth 1 https://github.com/nickkostik/modelhub-kit.git modelhub-kit-v0.2.5
+cd modelhub-kit-v0.2.5
 ```
 
-The same Git commands work in PowerShell with `Set-Location modelhub-kit-v0.2.4`. Git is optional when using a downloaded archive. A source install works without Rust and retains a previously verified catalog engine if present. Bundles contain ModelHub Kit's own code and catalog engine.
+The same Git commands work in PowerShell with `Set-Location modelhub-kit-v0.2.5`. Git is optional when using a downloaded archive. A source install uses Python and retains a previously verified catalog engine if present. Bundles contain ModelHub Kit's own code and catalog engine.
 
 From a downloaded or cloned copy of this project:
 
@@ -40,9 +42,9 @@ repeat installation with identical files does no work. Modified application
 files and custom commands are preserved; the installer stops instead of
 overwriting them. No backups are made.
 
-### Native catalog engine
+### Native installer and catalog engine
 
-`sync`, `limits`, and `maintain` use the Rust engine installed by the platform bundle. A repeat installation of the same bundle reuses it. For a source checkout, you can supply a reviewed build and its expected checksum. Rust is needed on the build machine only.
+The installed command runs `--version`, `init`, `sync`, and `limits` in Rust on the normal bundle path. `maintain` uses the same Rust catalog engine through its Python adapter. An unchanged installation skips writes. When an install is interrupted after changes begin, rerun the same checked bundle to finish its pending application transaction. A previous Python-only installation uses its installed interpreter for the one-time activity check during migration. For a source checkout, you can supply a reviewed catalog build and its expected checksum. Rust is needed on the build machine only.
 
 ```sh
 cargo build --locked --release --manifest-path native/Cargo.toml
@@ -65,7 +67,7 @@ To package a release, build a clean checkout of the published source with its lo
 ```sh
 commit=$(git rev-parse HEAD)
 target=$(rustc -vV | sed -n 's/^host: //p')
-MODELHUB_KIT_BUILD_ID="modelhub-kit-catalog-v0.2.4+$commit:$target" \
+MODELHUB_KIT_BUILD_ID="modelhub-kit-catalog-v0.2.5+$commit:$target" \
   cargo build --locked --release --manifest-path native/Cargo.toml --target "$target"
 python3 scripts/package-native-release.py --ref "$commit" --target "$target" \
   --binary "native/target/$target/release/modelhub-kit-catalog" --output "$bundle_directory"
@@ -94,9 +96,9 @@ any existing profile contents; the installer does not edit them. See the
 
 ## Prerequisites
 
-The wrappers detect compatible Python before making any changes. If Python is
-missing, they print installation steps and stop. To explicitly allow native
-Python installation:
+Source installs and explicit prerequisite or scheduling requests use the
+Python compatibility installer. Those paths detect a compatible Python first.
+Allow its native package bootstrap explicitly when needed:
 
 ```sh
 sh scripts/install.sh --prerequisites
@@ -123,8 +125,9 @@ The [Python documentation](https://docs.python.org/3/using/) covers official
 installation options. On macOS, preserve Apple's system Python and install a
 separate supported interpreter.
 
-Without that opt-in, missing or old Node produces an actionable package-manager
-command. Repositories advertising older-than-22 Node packages are left unchanged.
+The native bundle installer leaves Node selection to tool maintenance and the
+explicit prerequisite path. The compatibility installer reports a command for
+missing or old Node. Repositories advertising older-than-22 Node packages are left unchanged.
 An unavailable supported native package is reported as a prerequisite failure;
 the installer does not claim that the runtime is ready. Official LTS downloads and checksum-verification instructions
 are available from [Node.js](https://nodejs.org/en/download). Node is not

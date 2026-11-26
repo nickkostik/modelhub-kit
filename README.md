@@ -1,6 +1,6 @@
 # ModelHub Kit
 
-Lightweight maintenance for coding CLIs, model catalogs, and native MCP/ACP configuration across Linux, macOS, and Windows. Release bundles include a prebuilt Rust catalog engine. The installer and tool maintenance use Python 3.11+ and its standard library.
+Lightweight maintenance for coding CLIs, model catalogs, and native MCP/ACP configuration across Linux, macOS, and Windows. The platform bundle installs with Rust and runs `init`, `sync`, and `limits` directly. Tool updates, scheduling, fleet delivery, and integration adapters use Python 3.11+ and its standard library.
 
 ## Install
 

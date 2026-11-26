@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "modelhub-kit"
-version = "0.2.4"
+version = "0.2.5"
 description = "Conservative cross-platform coding-tool and model-catalog maintenance"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -14,7 +14,7 @@ dependencies = []
 modelhub-kit = "modelhub_kit.__main__:cli"
 
 [tool.setuptools.package-data]
-modelhub_kit = ["tools.json"]
+modelhub_kit = ["tools.json", "default-config.json", "windows-launcher.cmd"]
 
 [tool.setuptools.packages.find]
 include = ["modelhub_kit*"]

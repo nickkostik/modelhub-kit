@@ -10,6 +10,19 @@ $ErrorActionPreference = 'Stop'
 if ([bool]$NativeCatalogBinary -ne [bool]$NativeCatalogSha256) {
     throw 'Supply both -NativeCatalogBinary and -NativeCatalogSha256.'
 }
+$bundleRoot = Join-Path $Source 'native'
+$checksumFile = Join-Path $bundleRoot 'bundle.sha256'
+if (-not $Prerequisites -and -not $Schedule -and -not $NativeCatalogBinary -and (Test-Path -LiteralPath $checksumFile)) {
+    $binary = Join-Path $bundleRoot 'modelhub-kit-catalog.exe'
+    $expected = (Get-Content -Raw -LiteralPath $checksumFile).Trim()
+    if ($expected -cnotmatch '^[a-f0-9]{64}$' -or (Get-FileHash -Algorithm SHA256 -LiteralPath $binary).Hash.ToLowerInvariant() -cne $expected) {
+        throw 'ModelHub Kit executable checksum differs from the bundle.'
+    }
+    $nativeArguments = @('--install')
+    if ($DryRun) { $nativeArguments += '--dry-run' }
+    & $binary @nativeArguments
+    exit $LASTEXITCODE
+}
 function Find-CompatiblePython {
     $savedManagerInstall = [Environment]::GetEnvironmentVariable('PYTHON_MANAGER_AUTOMATIC_INSTALL', 'Process')
     $savedAllowInstall = [Environment]::GetEnvironmentVariable('PYLAUNCHER_ALLOW_INSTALL', 'Process')

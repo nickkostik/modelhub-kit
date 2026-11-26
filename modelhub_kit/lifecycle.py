@@ -25,6 +25,7 @@ APPLICATION_FILES = frozenset({
     'modelhub_kit/updater.py', 'modelhub_kit/catalog.py', 'modelhub_kit/native_catalog.py', 'modelhub_kit/integration.py',
     'modelhub_kit/projection.py', 'modelhub_kit/acp.py', 'modelhub_kit/lifecycle.py',
     'modelhub_kit/cache.py', 'modelhub_kit/fleet.py', 'modelhub_kit/schedule.py', 'modelhub_kit/tools.json',
+    'modelhub_kit/default-config.json', 'modelhub_kit/windows-launcher.cmd',
     'modelhub_kit/native_helpers/__init__.py', 'modelhub_kit/native_helpers/omp.py',
     'modelhub_kit/native_helpers/droid.py', 'modelhub_kit/native_helpers/products.py',
     'modelhub_kit/native_helpers/desktop.py', 'modelhub_kit/native_helpers/macos_apps.py',

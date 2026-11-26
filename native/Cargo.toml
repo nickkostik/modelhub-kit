@@ -1,6 +1,6 @@
 [package]
 name = "modelhub-kit-catalog"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 publish = false
 
@@ -13,8 +13,16 @@ reqwest = { version = "0.12.28", default-features = false, features = ["http2", 
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order", "arbitrary_precision"] }
 sha2 = "0.10.9"
+tempfile = "3.27"
 time = { version = "0.3.47", features = ["formatting"] }
 tokio = { version = "1.54.1", features = ["rt", "net", "time"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.186"
+
+[target.'cfg(windows)'.dependencies]
+dunce = "1.0.5"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [profile.release]
 lto = "thin"

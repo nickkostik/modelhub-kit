@@ -24,13 +24,13 @@ const LIMITS: [(&str, Option<&str>, Option<&str>); 5] = [
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
-    id: String,
-    url: Option<String>,
-    bearer_env: Option<String>,
-    provider_id: Option<String>,
+    pub(crate) id: String,
+    pub(crate) url: Option<String>,
+    pub(crate) bearer_env: Option<String>,
+    pub(crate) provider_id: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Operation {
     Sync,
@@ -42,18 +42,18 @@ pub enum Operation {
 pub struct Request {
     pub operation: Operation,
     pub prior_bytes: usize,
-    source: Source,
-    cooldown: Option<Value>,
+    pub(crate) source: Source,
+    pub(crate) cooldown: Option<Value>,
 }
 
 #[derive(Serialize)]
 pub struct Reply {
-    result: Value,
-    record: Option<Value>,
-    cooldown: Option<Value>,
+    pub(crate) result: Value,
+    pub(crate) record: Option<Value>,
+    pub(crate) cooldown: Option<Value>,
 }
 
-fn safe_id(value: &str, max: usize) -> bool {
+pub(crate) fn safe_id(value: &str, max: usize) -> bool {
     let mut bytes = value.bytes();
     let allowed = |c: u8| c.is_ascii_lowercase() || c.is_ascii_digit();
     value.len() <= max

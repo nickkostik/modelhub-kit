@@ -23,6 +23,7 @@ FILES = (
     "modelhub_kit/updater.py", "modelhub_kit/catalog.py", "modelhub_kit/native_catalog.py", "modelhub_kit/integration.py",
     "modelhub_kit/projection.py", "modelhub_kit/acp.py", "modelhub_kit/lifecycle.py",
     "modelhub_kit/cache.py", "modelhub_kit/fleet.py", "modelhub_kit/schedule.py", "modelhub_kit/tools.json",
+    "modelhub_kit/default-config.json", "modelhub_kit/windows-launcher.cmd",
     "modelhub_kit/native_helpers/__init__.py", "modelhub_kit/native_helpers/omp.py",
     "modelhub_kit/native_helpers/droid.py", "modelhub_kit/native_helpers/products.py",
     "modelhub_kit/native_helpers/desktop.py", "modelhub_kit/native_helpers/macos_apps.py",
@@ -44,7 +45,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 node_bin = __NODE_BIN__
 if node_bin:
     os.environ["PATH"] = node_bin + os.pathsep + os.environ.get("PATH", "")
-runpy.run_module("modelhub_kit", run_name="__main__", alter_sys=True)
+from modelhub_kit.core import installed_application
+with installed_application(pathlib.Path(__file__).parent.parent):
+    runpy.run_module("modelhub_kit", run_name="__main__", alter_sys=True)
 '''
 
 
@@ -392,6 +395,22 @@ def _install_files(source: Path, schedule: bool = False, dry_run: bool = False, 
     else:
         launcher = ("#!/bin/sh\n# modelhub-kit:launcher:v1\nexec " + shlex.quote(python) + " -B " +
                     shlex.quote(str(app / "launch.py")) + ' "$@"\n').encode()
+    if RELEASE_FILE in bodies:
+        executable = str(app / RELEASE_FILE)
+        if os.name == 'nt':
+            native_launcher = (bodies['modelhub_kit/windows-launcher.cmd'].decode().replace('\r\n', '\n')
+                               .replace('__BINARY__', executable.replace('%', '%%'))
+                               .replace('__COMPAT__', str(app / 'launch.py').replace('%', '%%'))
+                               .replace('\n', '\r\n')).encode()
+        else:
+            native_launcher = ("#!/bin/sh\n# modelhub-kit:launcher:v1\nexec '" + executable.replace("'", "'\\''") +
+                               "' --cli \"$@\"\n").encode()
+        packaged = (source / 'native/bundle.sha256').is_file() and (source / 'native/bundle.json').is_file()
+        prior_version = snapshot(app / 'modelhub_kit/__init__.py')
+        if (packaged and digest(bodies[RELEASE_FILE]) == (source / 'native/bundle.sha256').read_text().strip()
+                or previous and previous.get('launcherSha256') == digest(native_launcher)
+                and prior_version and prior_version[0] == bodies['modelhub_kit/__init__.py']):
+            launcher = native_launcher
     for relative in bodies:
         target = app / relative
         if target not in originals:
@@ -478,11 +497,19 @@ def install(source: Path, schedule: bool = False, dry_run: bool = False, prerequ
     source = source.resolve()
     sys.path.insert(0, str(source))
     from modelhub_kit.core import GuardError, locations, writer
+    from modelhub_kit.lifecycle import installation_paths
     try:
-        with contextlib.nullcontext() if dry_run else writer(locations()[2]):
+        app, _ = installation_paths(Path.home())
+        with contextlib.ExitStack() as leases:
+            if not dry_run:
+                leases.enter_context(writer(app.parent, name='.application.lock'))
+                pending = app.parent / '.install-pending.json'
+                if pending.exists() or pending.is_symlink():
+                    raise GuardError('installation-recovery-required')
+                leases.enter_context(writer(locations()[2]))
             result = _install_files(source, schedule, dry_run, prerequisites, native_catalog=native_catalog)
     except GuardError as error:
-        if str(error) in {"writer-busy", "active-or-unknown-kit-runtime", "unsafe-installation-directory-preserved"}:
+        if str(error) in {"writer-busy", "active-or-unknown-kit-runtime", "unsafe-installation-directory-preserved", "installation-recovery-required"}:
             return {"status": "queued", "reason": str(error), "filesChanged": 0, "backupsCreated": 0}
         raise ValueError("The shared maintenance state was preserved") from error
     if dry_run or result.get("status") == "queued":

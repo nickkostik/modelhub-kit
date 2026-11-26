@@ -15,6 +15,7 @@ import signal
 import ssl
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -175,30 +176,43 @@ def atomic_json(path, value, *, durable=False):
 
 
 @contextlib.contextmanager
-def writer(state):
+def writer(state, *, name='writer.lock', shared=False):
     root = private_directory(state)
-    lock = root / 'writer.lock'
+    lock = root / name
     fd = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     try:
         protected(lock)
         if os.name == 'nt':
             import msvcrt
-            if os.fstat(fd).st_size == 0:
-                os.write(fd, b'0')
             os.lseek(fd, 0, 0)
             try:
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                msvcrt.locking(fd, msvcrt.LK_NBRLCK if shared else msvcrt.LK_NBLCK, 1)
             except OSError as error:
                 raise GuardError('writer-busy') from error
         else:
             import fcntl
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
             except BlockingIOError as error:
                 raise GuardError('writer-busy') from error
         yield
     finally:
         os.close(fd)
+
+
+@contextlib.contextmanager
+def installed_application(base):
+    # Native installs use the same per-application lease as scheduled Python
+    # adapters, including when they use different state directories.
+    try:
+        with writer(base, name='.application.lock', shared='uninstall' not in sys.argv[1:]):
+            pending = base / '.install-pending.json'
+            if pending.exists() or pending.is_symlink():
+                raise GuardError('installation-recovery-required')
+            yield
+    except GuardError as error:
+        print(json.dumps({'status': 'queued', 'reason': str(error)}))
+        raise SystemExit(75) from None
 
 
 class WindowsJob:
@@ -594,16 +608,7 @@ def http_json(url, headers=None, limit=8 * 1024 * 1024):
 
 
 def default_config():
-    return {'version': 1, 'tools': [
-                'codex', 'claude', 'opencode', 'qwen', 'pi', 'copilot', 'grok',
-                'omp', 'droid', 'devin-cli', 'cursor-cli', 'muse', 'devin-desktop',
-                'cursor-desktop', 'grokbot', 'kilo', 'dsh', 'cline', 'crush',
-                'openclaw', 'kimi', 'glm-acp-agent', 'codex-acp',
-                'claude-acp', 'paseo',
-            ],
-            'externally_managed_tools': [],
-            'cache_budget_bytes': 2 * 1024**3, 'catalog_sources': [], 'mcp_servers': {}, 'acp_agents': {},
-            'model_providers': {}, 'integrations': {}, 'client_versions': {}}
+    return json.loads(pathlib.Path(__file__).with_name('default-config.json').read_text(encoding='utf-8'))
 
 
 def config(path):

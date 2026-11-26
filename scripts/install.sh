@@ -3,9 +3,27 @@
 set -eu
 installer_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 allow_prerequisites=0
+use_native=1
 for argument in "$@"; do
     [ "$argument" != "--prerequisites" ] || allow_prerequisites=1
+    case "$argument" in
+        --prerequisites|--schedule|--source|--source=*|--native-catalog-*) use_native=0 ;;
+    esac
 done
+bundle_dir=$(dirname -- "$installer_dir")/native
+if [ "$use_native" = 1 ] && [ -f "$bundle_dir/bundle.sha256" ]; then
+    binary="$bundle_dir/modelhub-kit-catalog"
+    expected=$(cat -- "$bundle_dir/bundle.sha256")
+    case "$expected" in ''|*[!a-f0-9]*) exit 78 ;; esac
+    [ "${#expected}" -eq 64 ] || exit 78
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum -- "$binary")
+    else
+        actual=$(shasum -a 256 -- "$binary")
+    fi
+    [ "${actual%% *}" = "$expected" ] || { printf '%s\n' 'ModelHub Kit executable checksum differs from the bundle.' >&2; exit 78; }
+    exec "$binary" --install "$@"
+fi
 find_python() {
     for candidate in python3 python3.14 python3.13 python3.12 python3.11 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
         if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
