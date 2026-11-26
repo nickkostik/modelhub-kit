@@ -150,7 +150,7 @@ def finish_promotion(stage, launcher, definition, *, dry_run):
     if not already_selected:
         if observed != operation['launcher']:
             raise GuardError('npm-launcher-changed')
-        if not idle(definition, where, operation.get('previous', '')):
+        if operation['before'] and not idle(definition, where, operation['previous']):
             return dict(answer, reason='active-or-unknown-processes')
         if where == project:
             os.rename(project, release)
@@ -299,7 +299,9 @@ def reconcile(name, definition, home, state, command, *, legacy, install_missing
     if before == latest and not repair:
         return dict(result, status='current', version=before)
     previous = current['release'] if current else state / 'npm'
-    if not idle(definition, previous):
+    # Creating an empty launcher path has no incumbent runtime to replace.
+    # Unrelated copies elsewhere on the machine can keep running.
+    if before and not idle(definition, previous):
         return dict(result, status='queued', reason='active-or-unknown-processes')
     dist = manifest.get('dist', {})
     integrity = dist.get('integrity', '')
