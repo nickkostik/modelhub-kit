@@ -11,7 +11,7 @@ specific unmet guard; it does not mean that the vendor lacks that operating syst
 | IDs | Supported installation/channel |
 | --- | --- |
 | `codex`, `claude`, `opencode`, `qwen`, `pi`, `copilot`, `grok` | Owned npm installations; official package stable `latest` metadata. Codex verifies its optional native runtime package. |
-| `paseo`, `t3`, `kilo`, `dsh`, `cline`, `kimi`, `crush`, `openclaw`, `glm-acp-agent` | Owned npm installations using each project's published package and command. Installing a server package does not start its server. |
+| `paseo`, `kilo`, `dsh`, `cline`, `kimi`, `crush`, `openclaw`, `glm-acp-agent` | Owned npm installations using each project's published package and command. Installing a server package does not start its server. |
 | `codex-acp`, `claude-acp` | Official `@agentclientprotocol` npm adapters; explicit installation only. MCP/ACP configuration never installs or starts them. |
 | `devin-cli` | Native macOS/Linux/Windows x64 and arm64 bundles from Devin's stable manifest, with publisher SHA-256. |
 | `cursor-cli` | Native macOS/Linux/Windows x64 and arm64 bundles from the versioned URL in Cursor's official installer metadata. The installer script is never executed. |
@@ -23,16 +23,11 @@ Generic npm mutations use descendant custody on Linux and Windows. On macOS,
 discovery remains available, but those mutations queue until a suitable native
 backend exists. The separate verified atomic native adapters remain available.
 
-T3's upstream CLI does not publish an Intel macOS binary. Its npm adapter reports
-`unsupported-vendor-platform` there; the separate upstream Electron desktop app
-has a different platform matrix. Native Windows OMP/Droid maintenance remains a
-queued native-channel task rather than being misrouted through another product.
-Hermes is not registered or reinstalled.
+Hermes can be selected explicitly. Install and update it through its official
+publisher channel. The kit can discover its command without running an agent.
+[Hermes installation and updates](https://hermes-agent.nousresearch.com/docs/getting-started/updating)
 
-On Oracle UEK8, ModelHub Kit checks the official Linux T3 runtime's ELF headers
-before installing or reporting its launcher current. A release that exceeds the
-kernel's note segment limit stays queued and the existing launcher is retained.
-[Oracle UEK issue](https://github.com/oracle/linux-uek/issues/46)
+Native Windows OMP and Droid maintenance queues for their respective channels.
 
 The three portable native terminal adapters use kit-owned version directories and
 one current ownership receipt. They preserve an unrelated existing installation;
@@ -165,7 +160,6 @@ configuration surface is interchangeable.
 - [Cursor CLI installation](https://docs.cursor.com/en/cli/installation), [current CLI overview](https://cursor.com/docs/cli/overview), and [desktop installation](https://cursor.com/docs/get-started/quickstart).
 - [Muse Code](https://dev.meta.ai/docs/muse-code).
 - [Grok Bot deployment feeds and platforms](https://prod.cursor.com/docs/grok-bot/deployment).
-- [T3 release/platform contracts](https://github.com/pingdotgg/t3code/blob/main/docs/operations/release.md).
 - [Codex ACP](https://github.com/agentclientprotocol/codex-acp) and [Claude Agent ACP](https://github.com/agentclientprotocol/claude-agent-acp).
 - [winget upgrades](https://learn.microsoft.com/windows/package-manager/winget/upgrade), [Inno Setup flags](https://jrsoftware.org/ishelp/topic_setupcmdline.htm), and [Homebrew commands](https://docs.brew.sh/Manpage).
 

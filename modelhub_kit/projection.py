@@ -14,7 +14,7 @@ from .core import GuardError, protected, read_json
 from .integration import (ENV_NAME, SAFE_ID, native_version, native_idle, native_json, owned_json, owned_toml,
                           queued, read_client, safe_url, version_parts)
 
-MODEL_CLIENTS = ('codex', 'opencode', 'pi', 'paseo', 't3', 'devin', 'muse', 'claude', 'cursor')
+MODEL_CLIENTS = ('codex', 'opencode', 'pi', 'paseo', 'devin', 'muse', 'claude', 'cursor')
 PROTOCOLS = ('openai-responses', 'openai-completions', 'anthropic-messages', 'google-generative-ai')
 GOOGLE_LEVELS = ('minimal', 'low', 'medium', 'high')
 OPENCODE_GO_PREFIX = 'opencode-modelhub-kit-'
@@ -398,7 +398,7 @@ def project(config, home, state, client, apply=False):
             return {'client': client, 'status': 'no-configured-providers', 'changed': False}
     except GuardError as error:
         return queued(client, str(error))
-    if client in ('t3', 'devin', 'muse', 'claude', 'cursor'):
+    if client in ('devin', 'muse', 'claude', 'cursor'):
         return queued(client, 'native-models-and-efforts-use-agent-discovery-no-documented-custom-provider-schema')
     try:
         selected = providers(config, state)

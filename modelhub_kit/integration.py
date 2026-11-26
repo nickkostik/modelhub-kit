@@ -217,7 +217,6 @@ def native_idle(client):
     if processes is None:
         return False
     pattern = {
-        't3': r'(?:@t3tools[/\\]code|t3code|t3-code)',
         'paseo': r'(?:paseo|@getpaseo[/\\](?:cli|server))',
         'codex': r'(?:codex|@openai[/\\]codex)',
         'claude': r'(?:claude|claude-code|@anthropic-ai[/\\]claude-code)',

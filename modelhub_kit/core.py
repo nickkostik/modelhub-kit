@@ -598,7 +598,7 @@ def default_config():
                 'codex', 'claude', 'opencode', 'qwen', 'pi', 'copilot', 'grok',
                 'omp', 'droid', 'devin-cli', 'cursor-cli', 'muse', 'devin-desktop',
                 'cursor-desktop', 'grokbot', 'kilo', 'dsh', 'cline', 'crush',
-                'openclaw', 'kimi', 'glm-acp-agent', 't3', 'codex-acp',
+                'openclaw', 'kimi', 'glm-acp-agent', 'codex-acp',
                 'claude-acp', 'paseo',
             ],
             'externally_managed_tools': [],
@@ -663,4 +663,11 @@ def config(path):
             raise GuardError('explicit-client-integration-surfaces-required')
     if not isinstance(value.get('cache_budget_bytes', 0), int) or not 64 * 1024**2 <= value['cache_budget_bytes'] <= 8 * 1024**3:
         raise GuardError('invalid-cache-budget')
+    # Existing configs can still carry the retired adapter.
+    if 't3' in value.get('tools', []):
+        value['tools'] = [name for name in value['tools'] if name != 't3']
+    if 't3' in external:
+        value['externally_managed_tools'] = [name for name in external if name != 't3']
+    integrations.pop('t3', None)
+    versions.pop('t3', None)
     return value

@@ -120,6 +120,8 @@ def describe(name, definition, state, home=None):
             result.update(present=bool(value), status='native-metadata-verified' if value else 'not-installed')
             if value:
                 result['version'] = value['version']
+        elif manager == 'publisher-managed' and command:
+            result['status'] = 'publisher-managed'
         elif not manager:
             receipt = owned_installation(state, name)
             if receipt:
@@ -274,6 +276,11 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
             command = managed['launcher']
         if definition.get('manager'):
             manager = definition['manager']
+            if manager == 'publisher-managed':
+                status = 'queued' if command or install_missing else 'not-installed'
+                results.append({'tool': name, 'status': status, 'installed': False,
+                                'reason': 'use-official-publisher-channel', 'source': definition['source']})
+                continue
             if manager in ('native-products', 'native-desktop'):
                 try:
                     if manager == 'native-products':
@@ -366,19 +373,6 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
                 current = npm_metadata_version(json.loads(metadata.read_text()))
             value, _ = http_json('https://registry.npmjs.org/' + definition['package'].replace('/', '%2f') + '/latest')
             latest = npm_metadata_version(value)
-            if name == 't3' and re.match(r'^6\.12\.[0-9]+-.*\.el[0-9]+uek(\.|$)', platform.release()):
-                checked = current if current and version_tuple(current) > version_tuple(latest) else latest
-                machine = platform.machine().lower()
-                architecture = {'arm64': 'aarch64', 'amd64': 'x86_64'}.get(machine, machine)
-                helper = pathlib.Path(__file__).parent / 'native_helpers/t3.py'
-                proof = run([sys.executable, str(helper), checked, architecture], timeout=20)
-                if proof['exit']:
-                    reason = proof['output'].strip()
-                    if reason != 'oracle-uek8-elf-note-limit':
-                        reason = 'official-t3-asset-metadata-unavailable'
-                    results.append({'tool': name, 'status': 'queued', 'reason': reason,
-                                    'version': current, 'target': checked, 'installed': False})
-                    continue
             if current and version_tuple(current) >= version_tuple(latest) and not repair:
                 if name == 'codex' and not healthy_codex(metadata, current, env):
                     results.append({'tool': name, 'status': 'repair-needed',

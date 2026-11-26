@@ -251,12 +251,9 @@ the explicitly configured `env_key`. Missing native metadata queues safely.
 Paseo adds `additionalModels` only for a verified `opencode acp` agent bound to
 the matching receipt-owned OpenCode provider. Exact native
 `provider/model/variant` IDs retain each working effort while live discovery
-remains enabled. Other agents retain their own ACP discovery; undocumented
-model-ID or credential binding is queued instead of guessed. T3 gets model and
-reasoning options from its ACP agent. The kit does not invent undocumented
-provider formats for Devin, Muse, Claude Code or Cursor; these surfaces retain
-native/ACP discovery and return a specific queued result for unsupported custom
-provider projection.
+remains enabled. Other agents retain their own ACP discovery. Undocumented model IDs or credential bindings queue for review. Devin, Muse,
+Claude Code and Cursor retain native or ACP discovery where the kit has no
+verified custom provider schema.
 
 ## ACP consumers and adapters
 
@@ -272,11 +269,7 @@ provider projection.
 `codex-acp` and `claude-acp` are separately selected updater tools. Their binaries
 are `codex-acp` and `claude-agent-acp`. Registration does not install or run them.
 Paseo registrations use `agents.providers.kit-<id>` with `extends: acp` and a
-literal command array. T3's reviewed provider-instance schema uses driver
-`acpRegistry`, source `local`, `commandPath` and `commandArgs`; custom instance IDs,
-preferences and disabled instances remain intact. A changed T3 configuration
-queues while any T3 runtime is active or its process state is unknown. Already
-current configuration can be verified without a handoff or restart.
+literal command array.
 
 Removing a provider or ACP agent from the kit configuration also visits its
 existing ownership receipts, including when the last entry is removed. Unchanged
@@ -294,7 +287,7 @@ pass. Keep the relevant integration enabled until retirement completes; disablin
 an integration stops its configuration management.
 
 Devin supplies an ACP agent with `devin acp`; it is not a documented ACP consumer.
-Configure that literal command as an agent for Paseo or T3. Credentials remain
+Configure that literal command as an agent for Paseo. Credentials remain
 with the agent; no authentication method is automatically selected. Listed
 `env_names` document required inherited environment variables, not stored values.
 
@@ -304,7 +297,6 @@ with the agent; no authentication method is automatically selected. Listed
 - [Devin's ACP agent role](https://docs.devin.ai/cli/acp/zed)
 - [Muse native and legacy MCP spellings and environment behavior](https://meta-models.github.io/muse-code-sdk/next/guides/extend/mcp-servers/)
 - [Paseo custom providers, additive models and thinking options](https://github.com/jlovec/paseo/blob/main/docs/custom-providers.md)
-- [T3 ACP provider settings](https://github.com/pingdotgg/t3code/blob/main/packages/provider-acp-registry/src/settings.ts) and [provider-instance schema](https://github.com/pingdotgg/t3code/blob/main/packages/contracts/src/providerInstance.ts)
 - [Codex profiles, catalogs and credential environment references](https://developers.openai.com/codex/config-reference)
 - [OpenCode providers](https://opencode.ai/docs/providers/), [ACP model/variant IDs](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/acp/config-option.ts), and [Pi model configuration](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md)
 - [Go endpoints and coding-agent headers](https://opencode.ai/v2/docs/console/go/#endpoints), [native Gemini requests](https://opencode.ai/v2/docs/console/api/inference/#gemini), and [Google SDK options](https://ai-sdk.dev/providers/ai-sdk-providers/google)

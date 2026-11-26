@@ -600,32 +600,14 @@ class NativeIntegration(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), before)
 
     def test_acp_consumers_register_commands_without_launch_or_auth_selection(self):
-        cfg = {'client_versions': {'paseo': '1.0.0', 't3': '0.1.0'},
+        cfg = {'client_versions': {'paseo': '1.0.0'},
                'acp_agents': {'example': {'command': 'example-acp', 'args': ['acp'], 'env_names': ['EXAMPLE_TOKEN']}}}
-        with mock.patch.object(acp.shutil, 'which', return_value='/example/example-acp'), mock.patch.object(acp, 't3_idle', return_value=True):
+        with mock.patch.object(acp.shutil, 'which', return_value='/example/example-acp'):
             result = acp.register(cfg, self.home, self.state, 'paseo', True)
             self.assertEqual(result['agentsStarted'], 0)
             native = json.loads((self.home / '.paseo/config.json').read_text())['agents']['providers']['kit-example']
             self.assertEqual(native, {'extends': 'acp', 'label': 'example', 'command': ['example-acp', 'acp']})
-            path = self.home / '.t3/userdata/settings.json'
-            custom = {'driver': 'customDriver', 'enabled': False, 'config': {'custom': 'preserved'}}
-            core.atomic_json(path, {'providerInstances': {'personal-id': custom}, 'theme': 'custom'})
-            self.assertEqual(acp.register(cfg, self.home, self.state, 't3', True)['status'], 'applied')
-            after = json.loads(path.read_text())
-            self.assertEqual(after['providerInstances']['personal-id'], custom)
-            self.assertEqual(after['providerInstances']['kit-example']['driver'], 'acpRegistry')
-            self.assertNotIn('authMethodId', after['providerInstances']['kit-example']['config'])
         self.assertEqual(acp.register(cfg, self.home, self.state, 'devin', True)['status'], 'queued')
-
-    def test_t3_active_runtime_and_custom_instance_queued_without_mutation(self):
-        cfg = {'client_versions': {'t3': '0.1.0'}, 'acp_agents': {'example': {'command': 'example-acp'}}}
-        path = self.home / '.t3/userdata/settings.json'
-        core.atomic_json(path, {'providerInstances': {}})
-        before = path.read_bytes()
-        with mock.patch.object(acp.shutil, 'which', return_value='/example/example-acp'), mock.patch.object(acp, 't3_idle', return_value=False):
-            self.assertEqual(acp.register(cfg, self.home, self.state, 't3', True)['status'], 'queued')
-        self.assertEqual(path.read_bytes(), before)
-        self.assertFalse((self.state / 'acp-t3.json').exists())
 
     def test_paseo_model_discovery_is_additive_and_acp_receipt_stays_valid(self):
         cfg = self.source()
@@ -644,8 +626,7 @@ class NativeIntegration(unittest.TestCase):
         with mock.patch.object(projection, 'native_version', side_effect=AssertionError('empty config')), mock.patch.object(acp, 'native_version', side_effect=AssertionError('empty config')):
             for client in ('opencode', 'pi', 'codex', 'paseo'):
                 self.assertEqual(projection.project({}, self.home, self.state, client, True)['status'], 'no-configured-providers')
-            for client in ('paseo', 't3'):
-                self.assertEqual(acp.register({}, self.home, self.state, client, True)['status'], 'no-configured-agents')
+            self.assertEqual(acp.register({}, self.home, self.state, 'paseo', True)['status'], 'no-configured-agents')
         self.assertFalse(self.state.exists())
 
     def test_provider_retirement_visits_removed_one_and_last_without_catalog_refresh(self):
@@ -764,31 +745,26 @@ class NativeIntegration(unittest.TestCase):
         self.assertTrue((self.state / 'projection-codex-catalog-kit-example.json').exists())
 
     def test_acp_removes_one_and_last_owned_agent_but_preserves_custom_and_active(self):
-        for client, relative, field in [('paseo', '.paseo/config.json', ('agents', 'providers')), ('t3', '.t3/userdata/settings.json', ('providerInstances',))]:
-            with self.subTest(client=client), mock.patch.object(acp.shutil, 'which', return_value='/example/agent'), mock.patch.object(acp, 't3_idle', return_value=True):
-                cfg = {'client_versions': {'paseo': '1.0.0', 't3': '0.1.0'}, 'acp_agents': {'example': {'command': 'agent'}, 'other': {'command': 'agent'}}}
-                path = self.home / relative
-                if client == 't3':
-                    core.atomic_json(path, {'providerInstances': {}})
-                acp.register(cfg, self.home, self.state, client, True)
-                del cfg['acp_agents']['example']
-                self.assertEqual(acp.register(cfg, self.home, self.state, client, True)['status'], 'applied')
-                doc = json.loads(path.read_text())
-                entries = doc
-                for key in field:
-                    entries = entries[key]
-                self.assertNotIn('kit-example', entries)
-                cfg['acp_agents'] = {}
-                original = path.read_text()
-                with mock.patch.object(integration, 'native_idle', return_value=False), mock.patch.object(acp, 't3_idle', return_value=False):
-                    self.assertEqual(acp.register(cfg, self.home, self.state, client, True)['status'], 'queued')
-                self.assertEqual(path.read_text(), original)
-                entries['kit-other']['disabled'] = True
-                core.atomic_json(path, doc)
-                self.assertEqual(acp.register(cfg, self.home, self.state, client, True)['status'], 'queued')
-                core.atomic_text(path, original)
-                with mock.patch.object(acp.shutil, 'which', side_effect=AssertionError('removed command need not be installed')):
-                    self.assertEqual(acp.register(cfg, self.home, self.state, client, True)['status'], 'applied')
+        with mock.patch.object(acp.shutil, 'which', return_value='/example/agent'):
+            cfg = {'client_versions': {'paseo': '1.0.0'}, 'acp_agents': {'example': {'command': 'agent'}, 'other': {'command': 'agent'}}}
+            path = self.home / '.paseo/config.json'
+            acp.register(cfg, self.home, self.state, 'paseo', True)
+            del cfg['acp_agents']['example']
+            self.assertEqual(acp.register(cfg, self.home, self.state, 'paseo', True)['status'], 'applied')
+            doc = json.loads(path.read_text())
+            entries = doc['agents']['providers']
+            self.assertNotIn('kit-example', entries)
+            cfg['acp_agents'] = {}
+            original = path.read_text()
+            with mock.patch.object(integration, 'native_idle', return_value=False):
+                self.assertEqual(acp.register(cfg, self.home, self.state, 'paseo', True)['status'], 'queued')
+            self.assertEqual(path.read_text(), original)
+            entries['kit-other']['disabled'] = True
+            core.atomic_json(path, doc)
+            self.assertEqual(acp.register(cfg, self.home, self.state, 'paseo', True)['status'], 'queued')
+            core.atomic_text(path, original)
+            with mock.patch.object(acp.shutil, 'which', side_effect=AssertionError('removed command need not be installed')):
+                self.assertEqual(acp.register(cfg, self.home, self.state, 'paseo', True)['status'], 'applied')
 
     def test_paseo_combined_removal_queues_then_retires_models_before_acp_command(self):
         cfg = self.source()
