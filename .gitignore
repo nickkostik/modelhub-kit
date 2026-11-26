@@ -5,6 +5,7 @@ venv/
 node_modules/
 dist/
 build/
+/native/target/
 *.egg-info/
 .env
 .env.*

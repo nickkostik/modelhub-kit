@@ -1,0 +1,21 @@
+[package]
+name = "modelhub-kit-catalog"
+version = "0.2.4"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1.0.103"
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+hex = "0.4.3"
+httpdate = "1.0.3"
+reqwest = { version = "0.12.28", default-features = false, features = ["http2", "rustls-tls-native-roots", "stream"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.149", features = ["preserve_order", "arbitrary_precision"] }
+sha2 = "0.10.9"
+time = { version = "0.3.47", features = ["formatting"] }
+tokio = { version = "1.54.1", features = ["rt", "net", "time"] }
+
+[profile.release]
+lto = "thin"
+strip = "symbols"

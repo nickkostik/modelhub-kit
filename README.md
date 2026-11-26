@@ -1,6 +1,6 @@
 # ModelHub Kit
 
-Lightweight maintenance for coding CLIs, model catalogs, and native MCP/ACP configuration across Linux, macOS, and Windows. Python 3.11+, standard library, no runtime dependencies.
+Lightweight maintenance for coding CLIs, model catalogs, and native MCP/ACP configuration across Linux, macOS, and Windows. Python 3.11+ and its standard library, with an optional Rust catalog engine.
 
 ## Install
 
@@ -16,7 +16,7 @@ Windows PowerShell:
 & .\scripts\install.ps1
 ```
 
-The installer creates a per-user command and initializes an empty personal configuration outside the checkout. It preserves existing configuration and compatible runtimes. Use `--prerequisites` on Unix or `-Prerequisites` on Windows to explicitly install missing prerequisites through a supported native package manager. Missing or obsolete Node runtimes are resolved from the current official LTS release index; an already compatible Node is reused without a same-version reinstall. Unsupported package-manager versions produce an actionable result. [Installation instructions](docs/INSTALL.md) cover release selection, paths, prerequisites, PATH setup, initialization, optional scheduling, kit upgrades and removal.
+The installer creates a per-user command and initializes an empty personal configuration outside the checkout. It preserves existing configuration and compatible runtimes. Use `--prerequisites` on Unix or `-Prerequisites` on Windows to explicitly install missing prerequisites through a supported native package manager. Missing or obsolete Node runtimes are resolved from the current official LTS release index; an already compatible Node is reused without a same-version reinstall. Unsupported package-manager versions produce an actionable result. [Installation instructions](docs/INSTALL.md) cover release selection, the optional Rust catalog engine, prerequisites, scheduling, upgrades, and removal.
 
 If another updater owns selected tools, list their IDs in `externally_managed_tools` in your local configuration. Kit skips those tools before probing or updating them and reports them as queued; other selected tools remain managed. This does not verify that the other updater is current or coordinate separately configured client integrations.
 

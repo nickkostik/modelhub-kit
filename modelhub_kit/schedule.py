@@ -33,19 +33,19 @@ def _identity(info):
             info.st_uid, mode, info.st_nlink)
 
 
-def _snapshot(path: Path):
+def _snapshot(path: Path, *, limit=1024 * 1024):
     if not path.exists() and not path.is_symlink():
         return None
     info = path.lstat()
-    if path.is_symlink() or path.resolve() != path.absolute() or not path.is_file() or info.st_nlink != 1 or info.st_size > 1024 * 1024:
+    if path.is_symlink() or path.resolve() != path.absolute() or not path.is_file() or info.st_nlink != 1 or info.st_size > limit:
         raise ValueError("unowned-schedule-file")
     if hasattr(os, "getuid") and (info.st_uid != os.getuid() or info.st_mode & 0o022):
         raise ValueError("unprotected-schedule-file")
     with path.open("rb") as stream:
         if _identity(os.fstat(stream.fileno())) != _identity(info):
             raise ValueError("concurrent-schedule-file-change")
-        data = stream.read()
-        if _identity(os.fstat(stream.fileno())) != _identity(info):
+        data = stream.read(limit + 1)
+        if len(data) > limit or _identity(os.fstat(stream.fileno())) != _identity(info):
             raise ValueError("concurrent-schedule-file-change")
     if _identity(path.lstat()) != _identity(info):
         raise ValueError("concurrent-schedule-file-change")

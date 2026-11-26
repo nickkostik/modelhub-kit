@@ -13,6 +13,7 @@ import subprocess
 import sys
 
 from .core import GuardError, protected, run, writer
+from .native_catalog import EXECUTABLE_NAMES, MAX_EXECUTABLE
 from . import cache, schedule
 
 INSTALL_MARKER = 'modelhub-kit-install-v1'
@@ -21,7 +22,7 @@ MAINTENANCE_MARKER = 'modelhub-kit-maintenance-v1'
 # A receipt cannot grant permission to remove arbitrary names beneath the app.
 APPLICATION_FILES = frozenset({
     'modelhub_kit/__init__.py', 'modelhub_kit/__main__.py', 'modelhub_kit/core.py', 'modelhub_kit/mutation.py',
-    'modelhub_kit/updater.py', 'modelhub_kit/catalog.py', 'modelhub_kit/integration.py',
+    'modelhub_kit/updater.py', 'modelhub_kit/catalog.py', 'modelhub_kit/native_catalog.py', 'modelhub_kit/integration.py',
     'modelhub_kit/projection.py', 'modelhub_kit/acp.py', 'modelhub_kit/lifecycle.py',
     'modelhub_kit/cache.py', 'modelhub_kit/fleet.py', 'modelhub_kit/schedule.py', 'modelhub_kit/tools.json',
     'modelhub_kit/native_helpers/__init__.py', 'modelhub_kit/native_helpers/omp.py',
@@ -30,7 +31,7 @@ APPLICATION_FILES = frozenset({
     'modelhub_kit/native_helpers/macos_npm.py',
     'modelhub_kit/native_helpers/codex_runtime.py',
     'launch.py', 'LICENSE', 'AGENTS.md', 'README.md', 'docs/INSTALL.md',
-    'docs/OPERATIONS.md', 'docs/SUPPORT.md', 'docs/INTEGRATIONS.md', 'docs/FLEET.md',
+    'docs/OPERATIONS.md', 'docs/SUPPORT.md', 'docs/INTEGRATIONS.md', 'docs/FLEET.md', *EXECUTABLE_NAMES,
 })
 _HEX = re.compile(r'[a-f0-9]{64}')
 
@@ -46,7 +47,10 @@ def installation_paths(home):
 
 def _snapshot(path):
     # Reuse the scheduler's bounded, descriptor/path-fenced ordinary-file reader.
-    return schedule._snapshot(Path(path))
+    path = Path(path)
+    if path.parent.name + '/' + path.name in EXECUTABLE_NAMES:
+        return schedule._snapshot(path, limit=MAX_EXECUTABLE)
+    return schedule._snapshot(path)
 
 
 def _directory(path):

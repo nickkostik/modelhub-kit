@@ -45,6 +45,36 @@ repeat installation with identical files does no work. Modified application
 files and custom commands are preserved; the installer stops instead of
 overwriting them. No backups are made.
 
+### Native catalog engine
+
+The current source supports an optional Rust executable for catalog refresh and
+cached limit reports. Install a reviewed binary built for your operating system
+and architecture. Use the SHA-256 from the build you reviewed or from a trusted
+release checksum. Rust is needed on the build machine only.
+
+```sh
+cargo build --locked --release --manifest-path native/Cargo.toml
+```
+
+Copy the resulting `modelhub-kit-catalog` (or `modelhub-kit-catalog.exe`) out of
+Cargo's target directory into its own regular file. Set the executable path
+and expected digest in your shell before running the installer.
+
+```sh
+sh scripts/install.sh --native-catalog-binary "$catalog_binary" --native-catalog-sha256 "$catalog_sha256"
+```
+
+```powershell
+& .\scripts\install.ps1 -NativeCatalogBinary $catalogBinary -NativeCatalogSha256 $catalogSha256
+```
+
+`sync`, `limits`, and `maintain` automatically use the receipt-verified engine.
+An ordinary installer rerun retains the selected binary. Select a new reviewed
+binary and checksum when updating it. The source-only installation requires
+Python 3.11 or newer and uses the same configuration and cache format.
+
+### Installed paths
+
 | Platform | Application | Command |
 | --- | --- | --- |
 | Linux and macOS | `~/.local/share/modelhub-kit/app` | `~/.local/bin/modelhub-kit` |

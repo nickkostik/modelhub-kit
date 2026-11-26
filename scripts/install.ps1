@@ -2,9 +2,14 @@ param(
     [switch]$Prerequisites,
     [switch]$Schedule,
     [switch]$DryRun,
-    [string]$Source = (Split-Path -Parent $PSScriptRoot)
+    [string]$Source = (Split-Path -Parent $PSScriptRoot),
+    [string]$NativeCatalogBinary,
+    [string]$NativeCatalogSha256
 )
 $ErrorActionPreference = 'Stop'
+if ([bool]$NativeCatalogBinary -ne [bool]$NativeCatalogSha256) {
+    throw 'Supply both -NativeCatalogBinary and -NativeCatalogSha256.'
+}
 function Find-CompatiblePython {
     $savedManagerInstall = [Environment]::GetEnvironmentVariable('PYTHON_MANAGER_AUTOMATIC_INSTALL', 'Process')
     $savedAllowInstall = [Environment]::GetEnvironmentVariable('PYLAUNCHER_ALLOW_INSTALL', 'Process')
@@ -60,6 +65,9 @@ $installArguments = @('-B', (Join-Path $PSScriptRoot 'install.py'), '--source', 
 if ($Schedule) { $installArguments += '--schedule' }
 if ($DryRun) { $installArguments += '--dry-run' }
 if ($Prerequisites) { $installArguments += '--prerequisites' }
+if ($NativeCatalogBinary) {
+    $installArguments += @('--native-catalog-binary', $NativeCatalogBinary, '--native-catalog-sha256', $NativeCatalogSha256)
+}
 $pythonPrefix = $pythonCommand.Prefix
 & $pythonCommand.Executable @pythonPrefix @installArguments
 exit $LASTEXITCODE

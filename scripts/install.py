@@ -20,7 +20,7 @@ import urllib.request
 
 FILES = (
     "modelhub_kit/__init__.py", "modelhub_kit/__main__.py", "modelhub_kit/core.py", "modelhub_kit/mutation.py",
-    "modelhub_kit/updater.py", "modelhub_kit/catalog.py", "modelhub_kit/integration.py",
+    "modelhub_kit/updater.py", "modelhub_kit/catalog.py", "modelhub_kit/native_catalog.py", "modelhub_kit/integration.py",
     "modelhub_kit/projection.py", "modelhub_kit/acp.py", "modelhub_kit/lifecycle.py",
     "modelhub_kit/cache.py", "modelhub_kit/fleet.py", "modelhub_kit/schedule.py", "modelhub_kit/tools.json",
     "modelhub_kit/native_helpers/__init__.py", "modelhub_kit/native_helpers/omp.py",
@@ -64,20 +64,20 @@ def _identity(info):
             info.st_uid, mode, info.st_nlink)
 
 
-def snapshot(path: Path):
+def snapshot(path: Path, *, limit=32 * 1024 * 1024):
     """Bind ownership evidence to both original bytes and the actual file."""
     if not path.exists() and not path.is_symlink():
         return None
     info = path.lstat()
-    if path.is_symlink() or path.resolve() != path.absolute() or not path.is_file() or info.st_nlink != 1:
+    if path.is_symlink() or path.resolve() != path.absolute() or not path.is_file() or info.st_nlink != 1 or info.st_size > limit:
         raise ValueError("An existing installation file is not a regular owned file")
     if hasattr(os, "getuid") and info.st_uid != os.getuid():
         raise ValueError("An existing installation file belongs to another user")
     with path.open("rb") as stream:
         if _identity(os.fstat(stream.fileno())) != _identity(info):
             raise ValueError("An installation file changed during inspection")
-        data = stream.read()
-        if _identity(os.fstat(stream.fileno())) != _identity(info):
+        data = stream.read(limit + 1)
+        if len(data) > limit or _identity(os.fstat(stream.fileno())) != _identity(info):
             raise ValueError("An installation file changed during inspection")
     if _identity(path.lstat()) != _identity(info):
         raise ValueError("An installation file changed during inspection")
@@ -305,7 +305,8 @@ def node_prerequisite(allow_install: bool = False) -> dict:
     return result
 
 
-def _install_files(source: Path, schedule: bool = False, dry_run: bool = False, prerequisites: bool = False) -> dict:
+def _install_files(source: Path, schedule: bool = False, dry_run: bool = False, prerequisites: bool = False,
+                   *, native_catalog: tuple[Path, str] | None = None) -> dict:
     if sys.version_info < (3, 11):
         raise ValueError("Python 3.11 or newer is required")
     source = source.resolve()
@@ -339,6 +340,23 @@ def _install_files(source: Path, schedule: bool = False, dry_run: bool = False, 
         raise ValueError("A nonempty unmanaged application directory was preserved")
     if app.is_symlink() or command.is_symlink():
         raise ValueError("An existing symlinked installation was preserved")
+    from modelhub_kit.native_catalog import MAX_EXECUTABLE, RELEASE_FILE
+    native_target = app / RELEASE_FILE
+    previous_native = (previous or {}).get("files", {}).get(RELEASE_FILE)
+    if native_catalog is not None:
+        artifact, checksum = native_catalog
+        if not re.fullmatch(r"[a-fA-F0-9]{64}", checksum):
+            raise ValueError("The native catalog release requires a SHA-256 checksum")
+        original = snapshot(artifact.absolute(), limit=MAX_EXECUTABLE)
+        if original is None or not original[0] or digest(original[0]) != checksum.lower():
+            raise ValueError("The native catalog release could not be verified")
+        bodies[RELEASE_FILE] = original[0]
+    elif previous_native is not None:
+        original = snapshot(native_target, limit=MAX_EXECUTABLE)
+        if original is None or not original[0] or digest(original[0]) != previous_native:
+            raise ValueError("The installed native catalog release could not be verified")
+        originals[native_target] = original
+        bodies[RELEASE_FILE] = original[0]
     # Keep a stable interpreter symlink when the package manager provides one;
     # resolving it into a versioned package cellar would break after cleanup.
     python = str(Path(sys.executable).absolute())
@@ -352,7 +370,8 @@ def _install_files(source: Path, schedule: bool = False, dry_run: bool = False, 
                     shlex.quote(str(app / "launch.py")) + ' "$@"\n').encode()
     for relative in bodies:
         target = app / relative
-        originals[target] = snapshot(target)
+        if target not in originals:
+            originals[target] = snapshot(target)
         if originals[target] is not None:
             actual = originals[target][0]
             expected = (previous or {}).get("files", {}).get(relative)
@@ -385,6 +404,8 @@ def _install_files(source: Path, schedule: bool = False, dry_run: bool = False, 
     result = {"status": "planned" if dry_run else "current", "application": str(app), "command": str(command),
               "python": platform.python_version(), "node": node, "filesChanged": 0,
               "scheduleRequested": schedule, "backupsCreated": 0}
+    if RELEASE_FILE in bodies:
+        result["nativeCatalogSha256"] = digest(bodies[RELEASE_FILE])
     if dry_run:
         result["allowlistedFiles"] = list(bodies)
         return result
@@ -408,7 +429,8 @@ def _install_files(source: Path, schedule: bool = False, dry_run: bool = False, 
     try:
         for relative, data in bodies.items():
             target = app / relative
-            result["filesChanged"] += atomic_write(target, data, expected=originals[target])
+            mode = 0o700 if relative == RELEASE_FILE else 0o600
+            result["filesChanged"] += atomic_write(target, data, mode, expected=originals[target])
         for target in obsolete:
             result["filesChanged"] += remove_owned(target, originals[target])
         result["filesChanged"] += atomic_write(command, launcher, 0o755, expected=originals[command])
@@ -426,14 +448,15 @@ def _install_files(source: Path, schedule: bool = False, dry_run: bool = False, 
     return result
 
 
-def install(source: Path, schedule: bool = False, dry_run: bool = False, prerequisites: bool = False) -> dict:
+def install(source: Path, schedule: bool = False, dry_run: bool = False, prerequisites: bool = False,
+            *, native_catalog: tuple[Path, str] | None = None) -> dict:
     # Import only the user-selected source package, never an unverified installed tree.
     source = source.resolve()
     sys.path.insert(0, str(source))
     from modelhub_kit.core import GuardError, locations, writer
     try:
         with contextlib.nullcontext() if dry_run else writer(locations()[2]):
-            result = _install_files(source, schedule, dry_run, prerequisites)
+            result = _install_files(source, schedule, dry_run, prerequisites, native_catalog=native_catalog)
     except GuardError as error:
         if str(error) in {"writer-busy", "active-or-unknown-kit-runtime", "unsafe-installation-directory-preserved"}:
             return {"status": "queued", "reason": str(error), "filesChanged": 0, "backupsCreated": 0}
@@ -478,9 +501,14 @@ def main() -> int:
     parser.add_argument("--schedule", action="store_true", help="explicitly register quiet daily per-user maintenance")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--prerequisites", action="store_true", help="wrapper option: allow native Python bootstrap")
+    parser.add_argument("--native-catalog-binary", type=Path, help="reviewed platform catalog executable")
+    parser.add_argument("--native-catalog-sha256", help="expected SHA-256 of that executable")
     args = parser.parse_args()
+    if (args.native_catalog_binary is None) != (args.native_catalog_sha256 is None):
+        parser.error("supply both --native-catalog-binary and --native-catalog-sha256")
+    native_catalog = (args.native_catalog_binary, args.native_catalog_sha256) if args.native_catalog_binary else None
     try:
-        result = install(args.source, args.schedule, args.dry_run, args.prerequisites)
+        result = install(args.source, args.schedule, args.dry_run, args.prerequisites, native_catalog=native_catalog)
         print(json.dumps(result, indent=2))
         if result.get("status") == "queued":
             return 75

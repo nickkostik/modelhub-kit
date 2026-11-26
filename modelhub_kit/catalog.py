@@ -124,6 +124,11 @@ def source_models(value, source):
 
 def limit_report(config, state):
     """Read the last metadata observation without network calls or cache writes."""
+    from .native_catalog import reconcile_catalogs
+    native = reconcile_catalogs(config, state, 'limits')
+    if native is not None:
+        return {'status': 'queued' if any(row['status'] != 'ready' for row in native) else 'ready',
+                'readOnly': True, 'modelCalls': 0, 'capacityProbed': False, 'sources': native}
     sources = []
     for source in config.get('catalog_sources', []):
         name = source.get('id', '')
@@ -149,6 +154,11 @@ def limit_report(config, state):
 
 
 def sync(config, state, fetch=http_json):
+    if fetch is http_json:
+        from .native_catalog import reconcile_catalogs
+        native = reconcile_catalogs(config, state, 'sync')
+        if native is not None:
+            return native
     root = pathlib.Path(state) / 'catalogs'
     cooldown_file = pathlib.Path(state) / 'catalog-cooldowns.json'
     cooldowns = read_json(cooldown_file, default={})
