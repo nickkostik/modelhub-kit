@@ -166,18 +166,26 @@ def package_file(prefix, package):
     return root.joinpath(*package.split('/')) / 'package.json'
 
 
-def version_tuple(value):
-    if not isinstance(value, str) or not SEMVER.fullmatch(value) or '-' in value:
+def version_tuple(value, *, allow_prerelease=False):
+    if not isinstance(value, str) or not SEMVER.fullmatch(value):
         raise GuardError('stable-release-required')
-    return tuple(int(p) for p in value.split('.'))
+    base, sep, prerelease = value.partition('-')
+    if sep and not allow_prerelease:
+        raise GuardError('stable-release-required')
+    identifiers = []
+    for part in prerelease.split('.') if sep else ():
+        if not part or (part.isdigit() and len(part) > 1 and part.startswith('0')):
+            raise GuardError('npm-package-metadata-invalid')
+        identifiers.append((0, int(part)) if part.isdigit() else (1, part))
+    return (*map(int, base.split('.')), not sep, tuple(identifiers))
 
 
-def npm_metadata_version(value):
+def npm_metadata_version(value, *, allow_prerelease=False):
     """Treat malformed vendor metadata as a per-tool failure, not a crash."""
     if not isinstance(value, dict):
         raise GuardError('npm-package-metadata-invalid')
     version = value.get('version')
-    version_tuple(version)
+    version_tuple(version, allow_prerelease=allow_prerelease)
     return version
 
 
@@ -351,6 +359,8 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
                 prefix = pathlib.Path(result['output'].strip())
             target_prefix = pathlib.Path(state) / 'npm' if managed or not command else prefix
             metadata = package_file(target_prefix, definition['package'])
+            # DeepSeek publishes its endorsed release candidates under npm latest.
+            allow_prerelease = definition['package'] == '@deepseek-ai/dsh'
             current = None
             if command:
                 if not metadata.is_file() or metadata.is_symlink():
@@ -370,10 +380,13 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
                     if os.name != 'nt' or not managed or pathlib.Path(command).absolute() != pathlib.Path(managed['launcher']):
                         results.append({'tool': name, 'status': 'different-active-installation-preserved'})
                         continue
-                current = npm_metadata_version(json.loads(metadata.read_text()))
+                current = npm_metadata_version(json.loads(metadata.read_text()), allow_prerelease=allow_prerelease)
             value, _ = http_json('https://registry.npmjs.org/' + definition['package'].replace('/', '%2f') + '/latest')
-            latest = npm_metadata_version(value)
-            if current and version_tuple(current) >= version_tuple(latest) and not repair:
+            latest = npm_metadata_version(value, allow_prerelease=allow_prerelease)
+            order_is_newer = current is not None and (
+                version_tuple(current, allow_prerelease=allow_prerelease) >
+                version_tuple(latest, allow_prerelease=allow_prerelease))
+            if current and (current == latest or order_is_newer) and not repair:
                 if name == 'codex' and not healthy_codex(metadata, current, env):
                     results.append({'tool': name, 'status': 'repair-needed',
                                     'reason': 'native-platform-runtime-unavailable', 'installed': False})
@@ -381,7 +394,7 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
                 else:
                     results.append({'tool': name, 'status': 'current' if current == latest else 'newer-installation-preserved', 'version': current, 'installed': False})
                     continue
-            if current and version_tuple(current) > version_tuple(latest):
+            if order_is_newer:
                 results.append({'tool': name, 'status': 'newer-installation-preserved', 'installed': False})
                 continue
             if dry_run:
@@ -416,19 +429,24 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
             args = npm + ['install', '--global', '--prefix', str(target_prefix), '--include=optional', '--umask=0022',
                           '--omit=dev', '--engine-strict', '--no-audit', '--no-fund', '--logs-max=0', '--cache', str(cache),
                           '--registry=https://registry.npmjs.org']
-            if name == 'opencode':
+            package_scripts = {
+                'opencode': '@opencode/cli',
+                'dsh': '@deepseek-ai/dsh-subprocess-local,koffi,node-pty',
+            }
+            if name in package_scripts:
                 npm_version = run(npm + ['--version'], env=env, timeout=10)
                 version = npm_version['output'].strip()
                 if npm_version['exit'] or not SEMVER.fullmatch(version):
                     raise GuardError('npm-version-unavailable')
                 if int(version.split('.')[0]) >= 11:
-                    args.append('--allow-scripts=@opencode/cli')
+                    args.append('--allow-scripts=' + package_scripts[name])
             args.append(definition['package'] + '@' + latest)
             result = run_mutation(args, env=env, timeout=300)
             if result.get('treeComplete') is not True or result.get('observationFailed'):
                 results.append({'tool': name, 'status': 'queued', 'reason': 'vendor-mutation-custody-unknown', 'installed': False})
                 continue
-            after = npm_metadata_version(json.loads(metadata.read_text())) if metadata.is_file() else None
+            after = (npm_metadata_version(json.loads(metadata.read_text()), allow_prerelease=allow_prerelease)
+                     if metadata.is_file() else None)
             if result['exit'] == 0 and after == latest and name == 'codex' and not healthy_codex(metadata, latest, env):
                 results.append({'tool': name, 'status': 'update-failed', 'reason': 'native-platform-runtime-unavailable', 'installed': True})
                 continue

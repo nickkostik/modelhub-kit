@@ -11,7 +11,8 @@ specific unmet guard; it does not mean that the vendor lacks that operating syst
 | IDs | Supported installation/channel |
 | --- | --- |
 | `codex`, `claude`, `opencode`, `qwen`, `pi`, `copilot`, `grok` | Owned npm installations; official package stable `latest` metadata. Codex verifies its optional native runtime package. |
-| `paseo`, `kilo`, `dsh`, `cline`, `kimi`, `crush`, `openclaw`, `glm-acp-agent` | Owned npm installations using each project's published package and command. Installing a server package does not start its server. |
+| `paseo`, `kilo`, `cline`, `kimi`, `crush`, `openclaw`, `glm-acp-agent` | Owned npm installations using each project's published package and command. Installing a server package does not start its server. |
+| `dsh` | Official DeepSeek Harness npm package and native shell dependencies. The publisher's npm latest tag may select a release candidate. |
 | `codex-acp`, `claude-acp` | Official `@agentclientprotocol` npm adapters; explicit installation only. MCP/ACP configuration never installs or starts them. |
 | `devin-cli` | Native macOS/Linux/Windows x64 and arm64 bundles from Devin's stable manifest, with publisher SHA-256. |
 | `cursor-cli` | Native macOS/Linux/Windows x64 and arm64 bundles from the versioned URL in Cursor's official installer metadata. The installer script is never executed. |
