@@ -20,7 +20,10 @@ specific unmet guard; it does not mean that the vendor lacks that operating syst
 | `omp` | Existing recognized standalone macOS installation, with official GitHub/build-service SHA-256 metadata. |
 | `droid` | Existing recognized Unix native installation, with Factory's official SHA-256. The vendor process-killing installer is never run. |
 
-Linux and Windows use descendant custody for npm updates. On macOS the kit can
+Linux and Windows use descendant custody for npm updates. A new installation
+uses an empty prefix for that tool under the kit's private state. Existing
+kit-owned packages keep their prefix and wait if their runtime is active.
+On macOS the kit can
 install explicitly selected npm tools or update its own launchers. It expands
 official registry data in a temporary directory using the macOS system sandbox,
 keeps optional platform dependencies, and checks the exact command before

@@ -211,10 +211,13 @@ def healthy_codex(metadata, expected, env):
 
 
 def owned_installation(state, name):
-    receipt = read_json(pathlib.Path(state) / 'tools' / (name + '.json'))
-    if not isinstance(receipt, dict) or receipt.get('prefix') != str(pathlib.Path(state) / 'npm'):
+    state = pathlib.Path(state)
+    receipt = read_json(state / 'tools' / (name + '.json'))
+    if not isinstance(receipt, dict) or receipt.get('prefix') not in (str(state / 'npm'), str(state / 'npm-tools' / name)):
         return None
     launcher, native = pathlib.Path(receipt['launcher']), pathlib.Path(receipt['native'])
+    if pathlib.Path(receipt['prefix']) not in native.parents:
+        return None
     if os.name == 'nt':
         if not launcher.is_file() or not native.is_file() or launcher.is_symlink() or native.is_symlink():
             return None
@@ -225,16 +228,20 @@ def owned_installation(state, name):
     return receipt
 
 
-def expose_installation(state, name, definition, prior=None):
+def npm_launcher(definition):
+    home, _, _ = locations()
+    directory = pathlib.Path(os.environ.get('LOCALAPPDATA', home / 'AppData/Local')) / 'modelhub-kit/bin' if os.name == 'nt' else home / '.local/bin'
+    return directory / (definition['command'] + ('.cmd' if os.name == 'nt' else ''))
+
+
+def expose_installation(state, name, definition, prior=None, prefix=None):
     state = pathlib.Path(state)
-    prefix = state / 'npm'
+    prefix = pathlib.Path(prefix) if prefix is not None else state / 'npm'
     native = prefix / (definition['command'] + '.cmd') if os.name == 'nt' else prefix / 'bin' / definition['command']
     if not native.is_file():
         raise GuardError('installed-command-missing')
-    home, _, _ = locations()
-    directory = pathlib.Path(os.environ.get('LOCALAPPDATA', home / 'AppData/Local')) / 'modelhub-kit/bin' if os.name == 'nt' else home / '.local/bin'
-    private_directory(directory)
-    launcher = directory / (definition['command'] + ('.cmd' if os.name == 'nt' else ''))
+    launcher = npm_launcher(definition)
+    private_directory(launcher.parent)
     receipt = prior or owned_installation(state, name)
     if launcher.exists() or launcher.is_symlink():
         if not receipt or pathlib.Path(receipt['launcher']) != launcher:
@@ -373,12 +380,31 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
                 continue
             if npm is None:
                 npm = npm_command()
+            if command and not managed and prefix is None:
                 result = run(npm + ['prefix', '--global'], env=env, timeout=15)
                 if result['exit']:
                     raise GuardError('npm-prefix-unavailable')
                 prefix = pathlib.Path(result['output'].strip())
-            target_prefix = pathlib.Path(state) / 'npm' if managed or not command else prefix
+            install_prefix = pathlib.Path(state) / 'npm-tools' / name
+            legacy_prefix = pathlib.Path(state) / 'npm'
+            target_prefix = install_prefix
+            if managed:
+                target_prefix = pathlib.Path(managed['prefix'])
+            elif command:
+                target_prefix = prefix
             metadata = package_file(target_prefix, definition['package'])
+            if not command:
+                if os.path.lexists(npm_launcher(definition)):
+                    results.append({'tool': name, 'status': 'unmanaged-installation-preserved'})
+                    continue
+                if os.path.lexists(package_file(legacy_prefix, definition['package']).parent):
+                    results.append({'tool': name, 'status': 'queued', 'reason': 'unowned-legacy-npm-package-present', 'installed': False})
+                    continue
+                if os.path.lexists(install_prefix):
+                    protected(install_prefix, True)
+                    if any(install_prefix.iterdir()):
+                        results.append({'tool': name, 'status': 'queued', 'reason': 'npm-installation-outcome-unverified', 'installed': False})
+                        continue
             # DeepSeek publishes its endorsed release candidates under npm latest.
             allow_prerelease = definition['package'] == '@deepseek-ai/dsh'
             current = None
@@ -420,15 +446,17 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
             if dry_run:
                 results.append({'tool': name, 'status': 'planned', 'before': current, 'target': latest})
                 continue
-            # Installing/updating package files can invalidate lazy imports. Require a proven idle tool.
-            from .cache import process_inventory
-            processes = process_inventory()
-            package_root = str(metadata.parent.resolve()).replace('\\', '/').lower()
-            package_name = definition['package'].replace('\\', '/').lower()
-            if processes is None or any(package_root in p.replace('\\', '/').lower() or package_name in p.replace('\\', '/').lower()
-                                        or re.search(r'(?i)(?:^|[/\\\s])' + re.escape(definition['command']) + r'(?:[.\s/\\]|$)', p) for p in processes):
-                results.append({'tool': name, 'status': 'queued-active-or-unknown-processes'})
-                continue
+            # An existing package can still have lazy imports from its prefix.
+            # A new, empty per-tool prefix is independent of other running copies.
+            if command:
+                from .cache import process_inventory
+                processes = process_inventory()
+                package_root = str(metadata.parent.resolve()).replace('\\', '/').lower()
+                package_name = definition['package'].replace('\\', '/').lower()
+                if processes is None or any(package_root in p.replace('\\', '/').lower() or package_name in p.replace('\\', '/').lower()
+                                            or re.search(r'(?i)(?:^|[/\\\s])' + re.escape(definition['command']) + r'(?:[.\s/\\]|$)', p) for p in processes):
+                    results.append({'tool': name, 'status': 'queued-active-or-unknown-processes'})
+                    continue
             if platform.system() == 'Darwin':
                 results.append({'tool': name, 'status': 'queued', 'reason': 'vendor-mutation-custody-unavailable', 'installed': False})
                 continue
@@ -461,19 +489,31 @@ def update(config, state, selected=None, install_missing=False, dry_run=False, r
                 if int(version.split('.')[0]) >= 11:
                     args.append('--allow-scripts=' + package_scripts[name])
             args.append(definition['package'] + '@' + latest)
+            fresh_prefix = protected(install_prefix, True) if not command else None
+            if fresh_prefix is not None and (os.path.lexists(npm_launcher(definition)) or any(install_prefix.iterdir())):
+                results.append({'tool': name, 'status': 'queued', 'reason': 'npm-installation-outcome-unverified', 'installed': False})
+                continue
             result = run_mutation(args, env=env, timeout=300)
             if result.get('treeComplete') is not True or result.get('observationFailed'):
                 results.append({'tool': name, 'status': 'queued', 'reason': 'vendor-mutation-custody-unknown', 'installed': False})
                 continue
             after = (npm_metadata_version(json.loads(metadata.read_text()), allow_prerelease=allow_prerelease)
                      if metadata.is_file() else None)
-            if result['exit'] == 0 and after == latest and name == 'codex' and not healthy_codex(metadata, latest, env):
-                results.append({'tool': name, 'status': 'update-failed', 'reason': 'native-platform-runtime-unavailable', 'installed': True})
-                continue
-            if result['exit'] == 0 and after == latest and target_prefix == pathlib.Path(state) / 'npm':
-                expose_installation(state, name, definition, managed)
-            results.append({'tool': name, 'status': 'updated' if result['exit'] == 0 and after == latest else 'update-failed',
-                            'before': current, 'version': after, 'exit': result['exit'], 'installed': result['exit'] == 0})
+            converged = result['exit'] == 0 and after == latest
+            runtime_missing = converged and name == 'codex' and not healthy_codex(metadata, latest, env)
+            if converged and not runtime_missing and (managed or not command):
+                expose_installation(state, name, definition, managed, target_prefix)
+            installed = result['exit'] == 0
+            if fresh_prefix is not None and (not converged or runtime_missing) and not os.path.lexists(npm_launcher(definition)):
+                now = protected(install_prefix, True)
+                if (fresh_prefix.st_dev, fresh_prefix.st_ino) == (now.st_dev, now.st_ino):
+                    shutil.rmtree(install_prefix)
+                    installed = False
+            row = {'tool': name, 'status': 'updated' if converged and not runtime_missing else 'update-failed',
+                   'before': current, 'version': after, 'exit': result['exit'], 'installed': installed}
+            if runtime_missing:
+                row['reason'] = 'native-platform-runtime-unavailable'
+            results.append(row)
         except (GuardError, OSError, ValueError) as error:
             reason = str(error) if isinstance(error, GuardError) else 'package-check-failed'
             if reason in UNVERIFIED_NPM_OWNERSHIP:
