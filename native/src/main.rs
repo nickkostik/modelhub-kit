@@ -10,9 +10,16 @@ const MAX_CONTROL: u64 = 64 * 1024;
 const MAX_CACHE: usize = 8 * 1024 * 1024;
 
 fn main() -> Result<()> {
-    if std::env::args().nth(1).as_deref() == Some("--version") {
-        println!("modelhub-kit-catalog {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
+    match std::env::args().nth(1).as_deref() {
+        Some("--version") => {
+            println!("modelhub-kit-catalog {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Some("--build-id") => {
+            println!("{}", option_env!("MODELHUB_KIT_BUILD_ID").unwrap_or("local-build"));
+            return Ok(());
+        }
+        _ => {}
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

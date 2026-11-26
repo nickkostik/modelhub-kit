@@ -7,21 +7,16 @@ manage; an existing compatible Node installation is preserved.
 
 ## Choose a release
 
-Use the [published releases](https://github.com/nickkostik/modelhub-kit/releases)
-to choose a reviewed version. For this release, either download and extract
-[the v0.2.4 source ZIP](https://github.com/nickkostik/modelhub-kit/archive/refs/tags/v0.2.4.zip)
-or use Git:
+Download the platform bundle from the [v0.2.4 release](https://github.com/nickkostik/modelhub-kit/releases/tag/v0.2.4) and compare its SHA-256 with `SHA256SUMS` from the same release before extracting it. Choose `linux-x64`, `linux-arm64`, `macos-x64` (Intel), `macos-arm64` (Apple Silicon), or `windows-x64`. The Linux bundles use glibc. The installer verifies the bundled Rust engine's platform and checksum. It keeps that engine in its installation receipt.
+
+For a source install, download the [v0.2.4 source ZIP](https://github.com/nickkostik/modelhub-kit/archive/refs/tags/v0.2.4.zip) or clone the tag.
 
 ```sh
 git clone --branch v0.2.4 --depth 1 https://github.com/nickkostik/modelhub-kit.git modelhub-kit-v0.2.4
 cd modelhub-kit-v0.2.4
 ```
 
-The same Git commands work in PowerShell; use `Set-Location modelhub-kit-v0.2.4`
-if preferred. Git is optional when using a downloaded source archive. Inspect
-the source before running the installer below. Tags select a version; a version
-label alone is not an independent signature verification. The release contains
-source, not a preconfigured account or a bundled vendor application.
+The same Git commands work in PowerShell with `Set-Location modelhub-kit-v0.2.4`. Git is optional when using a downloaded archive. A source install works without Rust and retains a previously verified catalog engine if present. Bundles contain ModelHub Kit's own code and catalog engine.
 
 From a downloaded or cloned copy of this project:
 
@@ -47,10 +42,7 @@ overwriting them. No backups are made.
 
 ### Native catalog engine
 
-The current source supports an optional Rust executable for catalog refresh and
-cached limit reports. Install a reviewed binary built for your operating system
-and architecture. Use the SHA-256 from the build you reviewed or from a trusted
-release checksum. Rust is needed on the build machine only.
+`sync`, `limits`, and `maintain` use the Rust engine installed by the platform bundle. A repeat installation of the same bundle reuses it. For a source checkout, you can supply a reviewed build and its expected checksum. Rust is needed on the build machine only.
 
 ```sh
 cargo build --locked --release --manifest-path native/Cargo.toml
@@ -68,10 +60,18 @@ sh scripts/install.sh --native-catalog-binary "$catalog_binary" --native-catalog
 & .\scripts\install.ps1 -NativeCatalogBinary $catalogBinary -NativeCatalogSha256 $catalogSha256
 ```
 
-`sync`, `limits`, and `maintain` automatically use the receipt-verified engine.
-An ordinary installer rerun retains the selected binary. Select a new reviewed
-binary and checksum when updating it. The source-only installation requires
-Python 3.11 or newer and uses the same configuration and cache format.
+To package a release, build a clean checkout of the published source with its locked dependencies. Set the build identity to the version, full commit, and target triple before building, then pass that binary and target to the packager. Keep the printed SHA-256 with the release assets.
+
+```sh
+commit=$(git rev-parse HEAD)
+target=$(rustc -vV | sed -n 's/^host: //p')
+MODELHUB_KIT_BUILD_ID="modelhub-kit-catalog-v0.2.4+$commit:$target" \
+  cargo build --locked --release --manifest-path native/Cargo.toml --target "$target"
+python3 scripts/package-native-release.py --ref "$commit" --target "$target" \
+  --binary "native/target/$target/release/modelhub-kit-catalog" --output "$bundle_directory"
+```
+
+Choose a supported target when cross-compiling. On Windows the binary ends in `.exe`. Build in an isolated workspace and use Rust's path remapping for the source tree, Cargo cache and toolchain paths before publishing artifacts. [Cargo build flags](https://doc.rust-lang.org/cargo/commands/cargo-build.html)
 
 ### Installed paths
 

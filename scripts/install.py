@@ -91,6 +91,27 @@ def own_file(path: Path) -> bytes:
     return value[0]
 
 
+def bundled_catalog(source: Path, version: str, filename: str):
+    receipt = snapshot(source / "native/bundle.json", limit=4096)
+    if receipt is None:
+        return None
+    document = json.loads(receipt[0])
+    system = {"linux": "linux", "darwin": "macos", "win32": "windows"}.get(sys.platform)
+    architecture = {"amd64": "x86_64", "x86_64": "x86_64", "arm64": "aarch64",
+                    "aarch64": "aarch64"}.get(platform.machine().lower())
+    if (not isinstance(document, dict) or document.get("schemaVersion") != 1
+            or document.get("version") != version
+            or not isinstance(document.get("sha256"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", document["sha256"])):
+        raise ValueError("The bundled native catalog receipt is invalid")
+    if (system is None or architecture is None or document.get("platform") != system
+            or document.get("architecture") != architecture):
+        raise ValueError("Choose a release bundle matching this operating system and architecture")
+    if document.get("filename") != filename:
+        raise ValueError("The bundled native catalog filename is invalid")
+    return source / filename, document["sha256"]
+
+
 def unchanged(path: Path, expected):
     if snapshot(path) != expected:
         raise ValueError("A concurrently changed installation file was preserved")
@@ -340,7 +361,10 @@ def _install_files(source: Path, schedule: bool = False, dry_run: bool = False, 
         raise ValueError("A nonempty unmanaged application directory was preserved")
     if app.is_symlink() or command.is_symlink():
         raise ValueError("An existing symlinked installation was preserved")
+    from modelhub_kit import __version__
     from modelhub_kit.native_catalog import MAX_EXECUTABLE, RELEASE_FILE
+    if native_catalog is None:
+        native_catalog = bundled_catalog(source, __version__, RELEASE_FILE)
     native_target = app / RELEASE_FILE
     previous_native = (previous or {}).get("files", {}).get(RELEASE_FILE)
     if native_catalog is not None:
