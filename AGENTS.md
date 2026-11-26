@@ -1,5 +1,7 @@
 # Working on ModelHub Kit
 
+Use Rust for new runtime code and move existing resource-intensive paths to Rust in focused changes. Preserve existing commands and configuration. Build platform binaries in the release process and distribute them with verified checksums so routine installs and updates use prebuilt artifacts. Compare CPU, peak memory, and latency through the normal entry point before replacing a live path.
+
 Keep this repository generic. Never add device inventories, real hostnames or addresses, account details, chats, conversation history, credentials, authentication files, database snapshots, logs, backups, or recovered projects. Runtime state belongs outside the checkout. Examples must start empty and contain environment-variable names rather than credential values.
 
 Use official current documentation for changing CLI interfaces and package layouts. Preserve exact upstream model IDs, capability metadata, and working reasoning choices. Never infer that a missing selector means a model does not support an effort. Keep unknown capabilities unknown and retain the last valid catalog after transport failures.
